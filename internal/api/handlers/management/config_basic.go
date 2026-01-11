@@ -267,6 +267,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 		return "round-robin", true
 	case "fill-first", "fillfirst", "ff":
 		return "fill-first", true
+	case "sequential-fill", "sequentialfill", "sf":
+		return "sequential-fill", true
 	default:
 		return "", false
 	}

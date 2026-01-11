@@ -111,3 +111,141 @@ func TestRoundRobinSelectorPick_Concurrent(t *testing.T) {
 	default:
 	}
 }
+
+func TestSequentialFillSelectorPick_StickyBehavior(t *testing.T) {
+	t.Parallel()
+
+	selector := &SequentialFillSelector{}
+	auths := []*Auth{
+		{ID: "a"},
+		{ID: "b"},
+		{ID: "c"},
+	}
+
+	// First pick should select "a" (first available)
+	got, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() #1 error = %v", err)
+	}
+	if got.ID != "a" {
+		t.Fatalf("Pick() #1 auth.ID = %q, want %q", got.ID, "a")
+	}
+
+	// Second pick should still return "a" (sticky)
+	got, err = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() #2 error = %v", err)
+	}
+	if got.ID != "a" {
+		t.Fatalf("Pick() #2 auth.ID = %q, want %q", got.ID, "a")
+	}
+}
+
+func TestSequentialFillSelectorPick_AdvanceOnUnavailable(t *testing.T) {
+	t.Parallel()
+
+	selector := &SequentialFillSelector{}
+
+	// Initial: all available
+	auths := []*Auth{
+		{ID: "a"},
+		{ID: "b"},
+		{ID: "c"},
+	}
+	got, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	if got.ID != "a" {
+		t.Fatalf("Pick() #1 auth.ID = %q, want %q", got.ID, "a")
+	}
+
+	// "a" becomes unavailable, should advance to "b"
+	authsWithoutA := []*Auth{
+		{ID: "b"},
+		{ID: "c"},
+	}
+	got, _ = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, authsWithoutA)
+	if got.ID != "b" {
+		t.Fatalf("Pick() #2 auth.ID = %q, want %q", got.ID, "b")
+	}
+
+	// "a" recovers, but should NOT jump back
+	got, _ = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	if got.ID != "b" {
+		t.Fatalf("Pick() #3 auth.ID = %q, want %q (should not jump back to a)", got.ID, "b")
+	}
+}
+
+func TestSequentialFillSelectorPick_NewRound(t *testing.T) {
+	t.Parallel()
+
+	selector := &SequentialFillSelector{}
+
+	// Start with "c" as current
+	auths := []*Auth{
+		{ID: "a"},
+		{ID: "b"},
+		{ID: "c"},
+	}
+
+	// Pick until we're at "c"
+	selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*Auth{{ID: "b"}, {ID: "c"}})
+	got, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*Auth{{ID: "c"}})
+	if got.ID != "c" {
+		t.Fatalf("Setup: expected current to be 'c', got %q", got.ID)
+	}
+
+	// "c" becomes unavailable, only "a" available -> new round starts
+	got, _ = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*Auth{{ID: "a"}})
+	if got.ID != "a" {
+		t.Fatalf("Pick() after round wrap: auth.ID = %q, want %q", got.ID, "a")
+	}
+}
+
+func TestSequentialFillSelectorPick_Concurrent(t *testing.T) {
+	selector := &SequentialFillSelector{}
+	auths := []*Auth{
+		{ID: "a"},
+		{ID: "b"},
+		{ID: "c"},
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+
+	goroutines := 32
+	iterations := 100
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				got, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+				if got == nil {
+					select {
+					case errCh <- errors.New("Pick() returned nil auth"):
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent Pick() error = %v", err)
+	default:
+	}
+}
