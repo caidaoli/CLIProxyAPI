@@ -207,6 +207,8 @@ func (b *Builder) Build() (*Service, error) {
 		switch strategy {
 		case "fill-first", "fillfirst", "ff":
 			selector = &coreauth.FillFirstSelector{}
+		case "sequential-fill", "sequentialfill", "sf":
+			selector = &coreauth.SequentialFillSelector{}
 		default:
 			selector = &coreauth.RoundRobinSelector{}
 		}
