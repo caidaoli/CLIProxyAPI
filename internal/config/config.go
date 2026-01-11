@@ -139,9 +139,33 @@ type QuotaExceeded struct {
 }
 
 // RoutingConfig configures how credentials are selected for requests.
+//
+// Supported strategies:
+//
+//   - "round-robin" (rr): Rotates through credentials on each request.
+//     Simple load balancing across all available credentials.
+//
+//   - "fill-first" (ff): Always picks the credential with the smallest ID.
+//     Burns one account before moving to the next.
+//     Example: A(available) B(cooldown) C(available) → picks A
+//              A(cooldown)  B(available) C(available) → picks B
+//              A(recovered) B(available) C(available) → picks A (jumps back!)
+//
+//   - "sequential-fill" (sf): Sticks to current credential until unavailable,
+//     then advances forward without jumping back. Ensures balanced usage.
+//     Example: A(available) B(cooldown) C(available) → picks A (sticky)
+//              A(cooldown)  B(available) C(available) → picks B (advance)
+//              A(recovered) B(available) C(available) → picks B (no jump back!)
+//              B(cooldown)  C(available)              → picks C (advance)
+//              B(cooldown)  C(cooldown)  A(available) → picks A (new round)
+//
+// Sequential-fill is ideal for subscriptions with rolling quota windows
+// (e.g., Claude Pro daily message limits), as it naturally staggers
+// recovery times across credentials.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first", "sequential-fill".
+	// Aliases: "rr", "ff", "sf".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
