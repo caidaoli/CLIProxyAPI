@@ -80,6 +80,20 @@ type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
 }
 
+// RetryLimiter is an optional interface for selectors that limit retry attempts.
+// Selectors can implement this to control how many credential switches are allowed
+// before giving up. This allows selection strategies to define their own retry behavior.
+type RetryLimiter interface {
+	// MaxRetryAttempts returns the maximum number of credential attempts allowed.
+	// Returns -1 for unlimited attempts (default behavior).
+	MaxRetryAttempts() int
+}
+
+const (
+	// UnlimitedRetryAttempts indicates no limit on retry attempts.
+	UnlimitedRetryAttempts = -1
+)
+
 // Hook captures lifecycle callbacks for observing auth changes.
 type Hook interface {
 	// OnAuthRegistered fires when a new auth is registered.
@@ -155,6 +169,20 @@ func (m *Manager) SetSelector(selector Selector) {
 	m.mu.Lock()
 	m.selector = selector
 	m.mu.Unlock()
+}
+
+// getMaxAttempts returns the maximum retry attempts allowed by the current selector.
+// If the selector implements RetryLimiter, its limit is used; otherwise returns unlimited.
+func (m *Manager) getMaxAttempts() int {
+	if m == nil {
+		return UnlimitedRetryAttempts
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limiter, ok := m.selector.(RetryLimiter); ok {
+		return limiter.MaxRetryAttempts()
+	}
+	return UnlimitedRetryAttempts
 }
 
 // SetStore swaps the underlying persistence store.
@@ -385,7 +413,12 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 	routeModel := req.Model
 	tried := make(map[string]struct{})
 	var lastErr error
+	maxAttempts := m.getMaxAttempts()
+	attempts := 0
 	for {
+		if maxAttempts > 0 && attempts >= maxAttempts {
+			break
+		}
 		auth, executor, errPick := m.pickNext(ctx, provider, routeModel, opts, tried)
 		if errPick != nil {
 			if lastErr != nil {
@@ -398,6 +431,7 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		attempts++
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -424,6 +458,10 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		m.MarkResult(execCtx, result)
 		return resp, nil
 	}
+	if lastErr != nil {
+		return cliproxyexecutor.Response{}, lastErr
+	}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
 func (m *Manager) executeCountWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -433,7 +471,12 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 	routeModel := req.Model
 	tried := make(map[string]struct{})
 	var lastErr error
+	maxAttempts := m.getMaxAttempts()
+	attempts := 0
 	for {
+		if maxAttempts > 0 && attempts >= maxAttempts {
+			break
+		}
 		auth, executor, errPick := m.pickNext(ctx, provider, routeModel, opts, tried)
 		if errPick != nil {
 			if lastErr != nil {
@@ -446,6 +489,7 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		attempts++
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -472,6 +516,10 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 		m.MarkResult(execCtx, result)
 		return resp, nil
 	}
+	if lastErr != nil {
+		return cliproxyexecutor.Response{}, lastErr
+	}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
 func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
@@ -481,7 +529,12 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 	routeModel := req.Model
 	tried := make(map[string]struct{})
 	var lastErr error
+	maxAttempts := m.getMaxAttempts()
+	attempts := 0
 	for {
+		if maxAttempts > 0 && attempts >= maxAttempts {
+			break
+		}
 		auth, executor, errPick := m.pickNext(ctx, provider, routeModel, opts, tried)
 		if errPick != nil {
 			if lastErr != nil {
@@ -494,6 +547,7 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		attempts++
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -537,6 +591,10 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		}(execCtx, auth.Clone(), provider, chunks)
 		return out, nil
 	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
 func rewriteModelForAuth(model string, metadata map[string]any, auth *Auth) (string, map[string]any) {
