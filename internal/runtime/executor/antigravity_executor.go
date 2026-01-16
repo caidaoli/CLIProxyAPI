@@ -47,7 +47,7 @@ const (
 	antigravityClientSecret        = "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"
 	defaultAntigravityAgent        = "antigravity/1.104.0 darwin/arm64"
 	antigravityAuthType            = "antigravity"
-	refreshSkew                    = 3000 * time.Second
+	refreshSkew                    = 300 * time.Second
 	systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -1368,9 +1368,9 @@ func antigravityBaseURLFallbackOrder(auth *cliproxyauth.Auth) []string {
 		return []string{base}
 	}
 	return []string{
-		antigravitySandboxBaseURLDaily,
-		antigravityBaseURLDaily,
 		antigravityBaseURLProd,
+		antigravityBaseURLDaily,
+		antigravitySandboxBaseURLDaily,
 	}
 }
 

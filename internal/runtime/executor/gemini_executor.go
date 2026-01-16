@@ -31,7 +31,7 @@ const (
 	glAPIVersion = "v1beta"
 
 	// streamScannerBuffer is the buffer size for SSE stream scanning.
-	streamScannerBuffer = 52_428_800
+	streamScannerBuffer = 2_097_152
 )
 
 // GeminiExecutor is a stateless executor for the official Gemini API using API keys.
