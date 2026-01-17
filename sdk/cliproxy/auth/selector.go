@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strconv"
@@ -225,6 +226,8 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 }
 
 // Pick selects the next available auth sequentially without jumping back.
+// On first access (after restart), it randomly selects a starting credential
+// to ensure balanced usage across all credentials over multiple restarts.
 func (s *SequentialFillSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = ctx
 	_ = opts
@@ -242,6 +245,13 @@ func (s *SequentialFillSelector) Pick(ctx context.Context, provider, model strin
 		s.current = make(map[string]string)
 	}
 	currentID := s.current[key]
+
+	// First access: randomly select a starting credential
+	if currentID == "" {
+		startIndex := rand.Intn(len(available))
+		s.current[key] = available[startIndex].ID
+		return available[startIndex], nil
+	}
 
 	// Sticky: if current credential is still available, keep using it
 	for _, auth := range available {
