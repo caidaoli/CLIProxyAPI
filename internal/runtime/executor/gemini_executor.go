@@ -30,8 +30,10 @@ const (
 	// glAPIVersion is the API version used for Gemini requests.
 	glAPIVersion = "v1beta"
 
-	// streamScannerBuffer is the buffer size for SSE stream scanning.
+	// streamScannerBuffer is the default buffer size for SSE stream scanning.
 	streamScannerBuffer = 2_097_152
+	// streamScannerBufferLarge is the buffer size for image models.
+	streamScannerBufferLarge = 52_428_800
 )
 
 // GeminiExecutor is a stateless executor for the official Gemini API using API keys.
@@ -297,7 +299,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}()
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
+		scanner.Buffer(nil, getStreamScannerBuffer(req.Model))
 		var param any
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -537,4 +539,13 @@ func fixGeminiImageAspectRatio(modelName string, rawJSON []byte) []byte {
 		}
 	}
 	return rawJSON
+}
+
+// getStreamScannerBuffer returns the appropriate buffer size based on model name.
+// Image models require larger buffers due to base64-encoded image data.
+func getStreamScannerBuffer(model string) int {
+	if strings.Contains(strings.ToLower(model), "image") {
+		return streamScannerBufferLarge
+	}
+	return streamScannerBuffer
 }

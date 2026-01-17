@@ -346,7 +346,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 				}
 			}()
 			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(nil, streamScannerBuffer)
+			scanner.Buffer(nil, getStreamScannerBuffer(baseModel))
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				appendAPIResponseChunk(ctx, e.cfg, line)
@@ -712,7 +712,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				}
 			}()
 			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(nil, streamScannerBuffer)
+			scanner.Buffer(nil, getStreamScannerBuffer(baseModel))
 			var param any
 			for scanner.Scan() {
 				line := scanner.Bytes()
