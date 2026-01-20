@@ -186,22 +186,24 @@ func TestSequentialFillSelectorPick_StickyBehavior(t *testing.T) {
 		{ID: "c"},
 	}
 
-	// First pick should select "a" (first available)
-	got, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	// First pick: randomly selects a starting credential
+	first, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
 	if err != nil {
 		t.Fatalf("Pick() #1 error = %v", err)
 	}
-	if got.ID != "a" {
-		t.Fatalf("Pick() #1 auth.ID = %q, want %q", got.ID, "a")
+	// Verify it's one of the available auths
+	validIDs := map[string]bool{"a": true, "b": true, "c": true}
+	if !validIDs[first.ID] {
+		t.Fatalf("Pick() #1 auth.ID = %q, want one of a/b/c", first.ID)
 	}
 
-	// Second pick should still return "a" (sticky)
-	got, err = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	// Second pick should return the same credential (sticky)
+	second, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
 	if err != nil {
 		t.Fatalf("Pick() #2 error = %v", err)
 	}
-	if got.ID != "a" {
-		t.Fatalf("Pick() #2 auth.ID = %q, want %q", got.ID, "a")
+	if second.ID != first.ID {
+		t.Fatalf("Pick() #2 auth.ID = %q, want %q (sticky)", second.ID, first.ID)
 	}
 }
 
@@ -216,25 +218,29 @@ func TestSequentialFillSelectorPick_AdvanceOnUnavailable(t *testing.T) {
 		{ID: "b"},
 		{ID: "c"},
 	}
-	got, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
-	if got.ID != "a" {
-		t.Fatalf("Pick() #1 auth.ID = %q, want %q", got.ID, "a")
+	first, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	// Random start - just verify it's valid
+	validIDs := map[string]bool{"a": true, "b": true, "c": true}
+	if !validIDs[first.ID] {
+		t.Fatalf("Pick() #1 auth.ID = %q, want one of a/b/c", first.ID)
 	}
 
-	// "a" becomes unavailable, should advance to "b"
-	authsWithoutA := []*Auth{
-		{ID: "b"},
-		{ID: "c"},
+	// Current credential becomes unavailable, should advance to next available
+	authsWithoutFirst := make([]*Auth, 0, 2)
+	for _, auth := range auths {
+		if auth.ID != first.ID {
+			authsWithoutFirst = append(authsWithoutFirst, auth)
+		}
 	}
-	got, _ = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, authsWithoutA)
-	if got.ID != "b" {
-		t.Fatalf("Pick() #2 auth.ID = %q, want %q", got.ID, "b")
+	second, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, authsWithoutFirst)
+	if second.ID == first.ID {
+		t.Fatalf("Pick() #2 should have advanced, got same ID %q", second.ID)
 	}
 
-	// "a" recovers, but should NOT jump back
-	got, _ = selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
-	if got.ID != "b" {
-		t.Fatalf("Pick() #3 auth.ID = %q, want %q (should not jump back to a)", got.ID, "b")
+	// First credential recovers, but should NOT jump back
+	third, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+	if third.ID != second.ID {
+		t.Fatalf("Pick() #3 auth.ID = %q, want %q (should not jump back)", third.ID, second.ID)
 	}
 }
 
@@ -243,16 +249,7 @@ func TestSequentialFillSelectorPick_NewRound(t *testing.T) {
 
 	selector := &SequentialFillSelector{}
 
-	// Start with "c" as current
-	auths := []*Auth{
-		{ID: "a"},
-		{ID: "b"},
-		{ID: "c"},
-	}
-
-	// Pick until we're at "c"
-	selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
-	selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*Auth{{ID: "b"}, {ID: "c"}})
+	// Force current to "c" by only providing "c"
 	got, _ := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*Auth{{ID: "c"}})
 	if got.ID != "c" {
 		t.Fatalf("Setup: expected current to be 'c', got %q", got.ID)
