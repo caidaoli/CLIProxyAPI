@@ -1202,7 +1202,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	payload = geminiToAntigravity(modelName, payload, projectID)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
-	if strings.Contains(modelName, "claude") {
+	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high") {
 		strJSON := string(payload)
 		paths := make([]string, 0)
 		util.Walk(gjson.ParseBytes(payload), "", "parametersJsonSchema", &paths)
@@ -1405,7 +1405,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
-	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	//	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
 
 	// Clean tool parameters schema for all models (both Claude and Gemini)
 	// This handles unsupported keywords like anyOf, oneOf, $ref, complex type arrays, etc.
