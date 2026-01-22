@@ -12,10 +12,10 @@ import (
 // Signature Caching Tests
 // ============================================================================
 
-func TestConvertAntigravityResponseToClaude_SessionIDDerived(t *testing.T) {
+func TestConvertAntigravityResponseToClaude_ParamsInitialized(t *testing.T) {
 	cache.ClearSignatureCache("")
 
-	// Request with user message - should derive session ID
+	// Request with user message - should initialize params
 	requestJSON := []byte(`{
 		"messages": [
 			{"role": "user", "content": [{"type": "text", "text": "Hello world"}]}
@@ -35,11 +35,14 @@ func TestConvertAntigravityResponseToClaude_SessionIDDerived(t *testing.T) {
 
 	var param any
 	ctx := context.Background()
-	result := ConvertAntigravityResponseToClaude(ctx, "claude-sonnet-4-5-thinking", requestJSON, requestJSON, responseJSON, &param)
+	_ = ConvertAntigravityResponseToClaude(ctx, "claude-sonnet-4-5-thinking", requestJSON, requestJSON, responseJSON, &param)
 
-	// Verify response was generated
-	if len(result) == 0 {
-		t.Error("Response should be generated")
+	params := param.(*Params)
+	if !params.HasFirstResponse {
+		t.Error("HasFirstResponse should be set after first chunk")
+	}
+	if params.CurrentThinkingText.Len() == 0 {
+		t.Error("Thinking text should be accumulated")
 	}
 }
 
