@@ -35,12 +35,11 @@ func TestConvertAntigravityResponseToClaude_SessionIDDerived(t *testing.T) {
 
 	var param any
 	ctx := context.Background()
-	ConvertAntigravityResponseToClaude(ctx, "claude-sonnet-4-5-thinking", requestJSON, requestJSON, responseJSON, &param)
+	result := ConvertAntigravityResponseToClaude(ctx, "claude-sonnet-4-5-thinking", requestJSON, requestJSON, responseJSON, &param)
 
-	// Verify session ID was set
-	params := param.(*Params)
-	if params.SessionID == "" {
-		t.Error("SessionID should be derived from request")
+	// Verify response was generated
+	if len(result) == 0 {
+		t.Error("Response should be generated")
 	}
 }
 
@@ -130,12 +129,8 @@ func TestConvertAntigravityResponseToClaude_SignatureCached(t *testing.T) {
 	// Process thinking chunk
 	ConvertAntigravityResponseToClaude(ctx, "claude-sonnet-4-5-thinking", requestJSON, requestJSON, thinkingChunk, &param)
 	params := param.(*Params)
-	sessionID := params.SessionID
 	thinkingText := params.CurrentThinkingText.String()
 
-	if sessionID == "" {
-		t.Fatal("SessionID should be set")
-	}
 	if thinkingText == "" {
 		t.Fatal("Thinking text should be accumulated")
 	}

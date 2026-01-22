@@ -117,6 +117,9 @@ func TestConvertClaudeRequestToAntigravity_ThinkingBlocks(t *testing.T) {
 }
 
 func TestConvertClaudeRequestToAntigravity_ThinkingBlockWithoutSignature(t *testing.T) {
+	// Clear cache to ensure no cached signatures from other tests
+	cache.ClearSignatureCache("")
+
 	// Unsigned thinking blocks should be removed entirely (not converted to text)
 	inputJSON := []byte(`{
 		"model": "claude-sonnet-4-5-thinking",
