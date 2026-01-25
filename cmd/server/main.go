@@ -445,6 +445,13 @@ func main() {
 	// Register built-in access providers before constructing services.
 	configaccess.Register()
 
+	// Initialize usage database plugin for statistics persistence.
+	// Uses PostgreSQL if PGSTORE_DSN is set, otherwise SQLite in auth directory.
+	if err := usage.InitDatabasePlugin(context.Background(), pgStoreDSN, pgStoreSchema, cfg.AuthDir); err != nil {
+		log.Warnf("usage database init failed, using memory only: %v", err)
+	}
+	defer usage.CloseDatabasePlugin()
+
 	// Handle different command modes based on the provided flags.
 
 	if vertexImport != "" {
