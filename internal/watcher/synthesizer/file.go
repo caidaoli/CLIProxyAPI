@@ -75,6 +75,9 @@ type NativeAuthFileResult struct {
 // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
 func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
 	auths, handled, errPlugin := SynthesizePluginAuthFile(ctx, fullPath, data)
+	if errPlugin != nil && ctx.StrictFileParsing {
+		return nil, errPlugin
+	}
 	if errPlugin == nil && handled {
 		return auths, nil
 	}

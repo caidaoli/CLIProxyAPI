@@ -97,6 +97,19 @@ type AuthUpdate struct {
 	// ReplaceMaterial means the persisted credential material changed and stale runtime errors must be cleared.
 	ReplaceMaterial bool
 	revision        uint64 // Watcher-local ordering, independent of runtime auth generations.
+	fileRemoval     bool   // The source file was removed, not just an ID from its content.
+}
+
+// IsFileRemoval reports whether this delete was observed as a whole-file removal.
+func (u AuthUpdate) IsFileRemoval() bool {
+	return u.fileRemoval
+}
+
+// SetFileRemoval marks a delete as a whole-file removal rather than a per-ID diff.
+func (u *AuthUpdate) SetFileRemoval(fileRemoval bool) {
+	if u != nil {
+		u.fileRemoval = fileRemoval
+	}
 }
 
 type AuthUpdateResult struct {

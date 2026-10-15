@@ -202,25 +202,76 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if auth == nil || auth.ID == "" {
 		return nil, nil
 	}
-	NormalizeCredentialMetadata(auth.Metadata)
-	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
-		return nil, fmt.Errorf("update auth: %w", errWeight)
-	}
 	unlockLifecycle := m.lockAuthLifecycle(auth.ID)
 	defer unlockLifecycle()
-	var resumeModels []string
-	cooldownStateChanged := false
 	releaseMutation, errMutation := m.lockAuthMutationContext(ctx, auth.ID)
 	if errMutation != nil {
 		return nil, errMutation
 	}
-	defer releaseMutation()
+	committedAuth, didCommit, effects, err := m.updateInternalLocked(ctx, base, auth, mode)
+	releaseMutation()
+	if err == nil && didCommit && committedAuth != nil {
+		m.finishAuthUpdate(ctx, committedAuth, effects, unlockLifecycle)
+	}
+	return committedAuth, err
+}
+
+// authUpdateEffects carries post-commit work computed while the manager lock is held.
+type authUpdateEffects struct {
+	persistCooldown bool
+	resumeModels    []string
+}
+
+// finishAuthUpdate runs post-commit side effects after the per-auth mutation
+// gate has been released, preserving the original update ordering in which
+// hooks and scheduler updates could re-enter manager operations. The lifecycle
+// lock is released before hooks run so hook re-entry cannot deadlock.
+func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, effects authUpdateEffects, unlockLifecycle func()) {
+	if committed == nil {
+		return
+	}
+	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
+		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	}
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(committed.Clone())
+	}
+	m.structuralEpoch.Add(1)
+	m.queueRefreshReschedule(committed.ID)
+	if effects.persistCooldown {
+		m.queueCooldownStatePersist(committed.ID)
+	}
+	for _, model := range effects.resumeModels {
+		registry.GetGlobalRegistry().ClearModelQuotaExceeded(committed.ID, model)
+		registry.GetGlobalRegistry().ResumeClientModel(committed.ID, model)
+	}
+	unlockLifecycle()
+	m.hook.OnAuthUpdated(ctx, committed.Clone())
+}
+
+// updateInternalLocked assumes the caller already holds the per-auth
+// mutation lock. It only commits manager state; callers run
+// finishAuthUpdate after releasing the gate. persistCooldownStates is also
+// deferred by callers because it may re-enter manager operations.
+// updateInternalLocked commits an update while the caller holds the gate.
+// The second return value reports whether this call actually committed new
+// state (versus returning the current snapshot for a discarded stale
+// update); only real commits may run post-commit side effects.
+func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mode updateAuthMode) (committedAuth *Auth, committed bool, effects authUpdateEffects, err error) {
+	if auth == nil || auth.ID == "" {
+		return nil, false, authUpdateEffects{}, nil
+	}
+	NormalizeCredentialMetadata(auth.Metadata)
+	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
+		return nil, false, authUpdateEffects{}, fmt.Errorf("update auth: %w", errWeight)
+	}
+	var resumeModels []string
+	cooldownStateChanged := false
 	m.mu.Lock()
 	existing, ok := m.auths[auth.ID]
 	if !ok || existing == nil {
 		m.mu.Unlock()
-		unlockLifecycle()
-		return nil, nil
+		return nil, false, authUpdateEffects{}, nil
 	}
 	now := time.Now()
 	var cooldownRecordsBefore []CooldownStateRecord
@@ -239,15 +290,16 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	}
 	if (mode == updateModeRefresh || mode == updateModePrepare) && base != nil && existing.RegistrationEpoch != base.RegistrationEpoch {
 		m.mu.Unlock()
-		unlockLifecycle()
-		return nil, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
+		return nil, false, authUpdateEffects{}, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
 	}
 	// Do not let an in-flight refresh overwrite credentials committed after its snapshot.
 	if mode == updateModeRefresh && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
 		if auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
 			current := existing.Clone()
 			m.mu.Unlock()
-			return current, nil
+			// Discarded stale refresh: committed=false so callers do not
+			// run finishAuthUpdate for a state this call did not change.
+			return current, false, authUpdateEffects{}, nil
 		}
 	}
 	if mode == updateModeRefresh {
@@ -265,8 +317,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	}
 	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < m.authEpochs[auth.ID] {
 		m.mu.Unlock()
-		unlockLifecycle()
-		return nil, fmt.Errorf("update auth %s: stale registration epoch %d < %d", auth.ID, auth.RegistrationEpoch, m.authEpochs[auth.ID])
+		return nil, false, authUpdateEffects{}, fmt.Errorf("update auth %s: stale registration epoch %d < %d", auth.ID, auth.RegistrationEpoch, m.authEpochs[auth.ID])
 	}
 	if auth.RegistrationEpoch >= m.authEpochs[auth.ID] {
 		m.authEpochs[auth.ID] = auth.RegistrationEpoch
@@ -356,14 +407,14 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		// A minted Meta key must reach the store before requests can use it.
 		if persistMetaMint {
 			m.mu.Unlock()
-			return nil, fmt.Errorf("persist meta auth: %w", errPersist)
+			return nil, false, authUpdateEffects{}, fmt.Errorf("persist meta auth: %w", errPersist)
 		}
 		// Ordinary persistence failures remain non-fatal, but never silent.
 		log.WithFields(log.Fields{"auth_id": auth.ID, "credential": auth.ID, "provider": auth.Provider}).Warnf("failed to persist updated auth %s (%s): %v", auth.Provider, auth.ID, errPersist)
 	}
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
+		return nil, false, authUpdateEffects{}, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
 	if existing.Generation >= auth.Generation {
@@ -382,26 +433,11 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		schedulerSnapshot = authClone.Clone()
 	}
 	m.mu.Unlock()
-	releaseMutation()
-	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
-		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	}
-	if m.scheduler != nil {
-		m.scheduler.upsertAuth(schedulerSnapshot)
-	}
-	m.structuralEpoch.Add(1)
-	m.queueRefreshReschedule(auth.ID)
-	updated := auth.Clone()
-	if !deferCooldownCleanup && cooldownStateChanged {
-		m.queueCooldownStatePersist(auth.ID)
-	}
-	for _, model := range resumeModels {
-		registry.GetGlobalRegistry().ClearModelQuotaExceeded(auth.ID, model)
-		registry.GetGlobalRegistry().ResumeClientModel(auth.ID, model)
-	}
-	unlockLifecycle()
-	m.hook.OnAuthUpdated(ctx, updated.Clone())
-	return updated, nil
+	_ = schedulerSnapshot
+	return auth.Clone(), true, authUpdateEffects{
+		persistCooldown: !deferCooldownCleanup && cooldownStateChanged,
+		resumeModels:    resumeModels,
+	}, nil
 }
 
 func resetRuntimeAvailabilityState(auth *Auth, now time.Time) {
