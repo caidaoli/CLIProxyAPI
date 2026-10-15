@@ -15,7 +15,7 @@ func bootstrapGitBackedConfig(ctx context.Context, examplePath, configFilePath s
 	if err := misc.CopyConfigTemplate(examplePath, configFilePath); err != nil {
 		return fmt.Errorf("copy config template: %w", err)
 	}
-	if err := persister.PersistConfig(ctx); err != nil {
+	if err := persistSeededConfig(ctx, configFilePath, persister.PersistConfig); err != nil {
 		return fmt.Errorf("persist config: %w", err)
 	}
 	return nil

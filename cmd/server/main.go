@@ -851,6 +851,20 @@ func resolveManagementBaseURL(flagURL string, cfg *config.Config) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
+// persistSeededConfig persists a config file freshly copied from the template. The file
+// is first rewritten as the startup load would, so a plaintext management secret never
+// reaches the remote store. When that fails, the copy is removed and an error returned,
+// so every start refuses the template instead of running from an unpersisted config.
+func persistSeededConfig(ctx context.Context, configFilePath string, persist func(context.Context) error) error {
+	if errPrepare := config.PrepareConfigFileForUpload(configFilePath); errPrepare != nil {
+		if errRemove := os.Remove(configFilePath); errRemove != nil {
+			log.WithError(errRemove).Warn("failed to remove the config copied from the template")
+		}
+		return fmt.Errorf("prepare config for upload: %w", errPrepare)
+	}
+	return persist(ctx)
+}
+
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]

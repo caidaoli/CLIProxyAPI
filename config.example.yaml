@@ -464,6 +464,20 @@ upstream:
     #   timeout: "600"
     #   timezone: "Asia/Singapore"  # fallback IANA timezone for cloaked currentDate; a credential JSON "timezone" takes priority
     #   stabilize-device-profile: false  # optional, default false; set true to enable per-auth fingerprint pinning
+    #   # Advanced operator overrides for exact-parity or gateway lanes. They apply to every Claude
+    #   # request, after the per-request derivation above, and can produce a beta set real Claude Code
+    #   # never sends, which api.anthropic.com may reject. Names are matched exactly; strip runs first.
+    #   # A credential's own "headers" entries are more specific and keep precedence where they already
+    #   # did: Anthropic-Beta on custom gateways and x-client-request-id everywhere.
+    #   anthropic-beta-strip: []   # remove these names from the derived or caller-supplied set, keeping order
+    #   anthropic-beta-append: []  # append these names at the end unless already present
+    #   # Cloaked requests to api.anthropic.com get a "diagnostics" body field like Claude Code, which in
+    #   # turn adds cache-diagnosis-2026-04-07. Set false to stop injecting it (default true).
+    #   inject-diagnostics: true
+    #   # x-client-request-id on first-party CLI-profile requests: "on" (default) synthesizes a fresh
+    #   # UUID per request (a confirmed Claude Code client keeps its own), "passthrough" forwards only
+    #   # the caller's value and never synthesizes one, "off" never sends the header.
+    #   client-request-id: "on"
 
   xai:
     # When true, inject the native x_search tool when the request does not declare it.
