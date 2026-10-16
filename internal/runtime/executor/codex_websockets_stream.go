@@ -835,7 +835,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	body = helps.SanitizeCodexInputItemIDs(body)
 	if useSIWC {
-		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions)
+		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = finalizePayload(body)
 	clientBody := body
