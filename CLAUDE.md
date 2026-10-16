@@ -9,7 +9,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.0
 - 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.30
-- Fork 增量: SF routing · 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · provider/protocol 修复
+- Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · provider/protocol 修复
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
 ## Hard Constraints
@@ -200,7 +200,7 @@ Modified:
 ### 3. Routing, Cooldown Persistence & Credential Lifecycle
 
 Fork-only:
-- `sdk/cliproxy/auth/routing_strategy.go`（+tests）— SF 策略常量与 `NormalizeRoutingStrategy`
+- `sdk/cliproxy/auth/routing_strategy.go`（+tests）— 路由策略常量、别名归一化 `NormalizeRoutingStrategy` 与 `SelectorForRoutingStrategy`；未知值回退 round-robin
 - `sdk/cliproxy/auth/cooldown_state_persister.go` — 增量、合并批次式冷却状态持久化
 - `internal/store/postgres_cooldown_store.go`（+tests）— PostgreSQL 事务型 cooldown store
 
@@ -293,4 +293,4 @@ Other:
 
 ### 10. Documentation
 
-- `README.md`/`README_CN.md` — Fork Features、SF、Management Center、重试语义与配置说明
+- `README.md`/`README_CN.md` — Fork Features、Management Center、重试语义与配置说明

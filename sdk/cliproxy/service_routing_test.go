@@ -19,7 +19,6 @@ func TestNormalizedRoutingRuntimeState(t *testing.T) {
 		{name: "empty defaults to round-robin", strategy: "", want: coreauth.RoutingStrategyRoundRobin},
 		{name: "round-robin alias", strategy: "rr", want: coreauth.RoutingStrategyRoundRobin},
 		{name: "fill-first alias", strategy: "ff", want: coreauth.RoutingStrategyFillFirst},
-		{name: "sf no longer recognized", strategy: "sf", want: coreauth.RoutingStrategyRoundRobin},
 		{name: "unknown falls back to round-robin", strategy: "bogus", want: coreauth.RoutingStrategyRoundRobin},
 	}
 

@@ -16,7 +16,6 @@ func TestNormalizeRoutingStrategy(t *testing.T) {
 		{name: "weighted round robin alias", input: "wrr", want: "weighted-round-robin", wantOK: true},
 		{name: "fill first alias", input: "ff", want: "fill-first", wantOK: true},
 		{name: "invalid", input: "bogus", want: "", wantOK: false},
-		{name: "sf no longer recognized", input: "sf", want: "", wantOK: false},
 	}
 
 	for _, tt := range tests {
@@ -47,7 +46,6 @@ func TestSelectorForRoutingStrategy(t *testing.T) {
 		{name: "weighted round robin alias", input: "wrr", wantType: &WeightedRoundRobinSelector{}},
 		{name: "fill first alias", input: "ff", wantType: &FillFirstSelector{}},
 		{name: "invalid defaults round robin", input: "bogus", wantType: &RoundRobinSelector{}},
-		{name: "sf falls back round robin", input: "sf", wantType: &RoundRobinSelector{}},
 	}
 
 	for _, tt := range tests {
