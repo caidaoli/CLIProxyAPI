@@ -50,15 +50,6 @@ You can access the following providers locally and with multiple CLI accounts th
 
 This fork includes the following enhancements not available in the upstream repository:
 
-### Web Search Support via Gemini (Antigravity)
-
-Enables web search capabilities for Antigravity provider through Gemini's googleSearch tool:
-- Auto-detects `web_search` tool requests from Claude/OpenAI API formats
-- Automatically switches model to `gemini-2.5-flash` for search queries
-- Converts search requests to Gemini's native googleSearch tool format
-- Parses `groundingMetadata` and transforms results to compatible format
-- Supports both Claude `tool_result` and OpenAI function response formats
-
 ### Progressive Parallel Auth Loading
 
 Default file-store startup binds HTTP and installs filesystem watches before scanning credentials on disk:

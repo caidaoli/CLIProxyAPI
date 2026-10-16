@@ -11,7 +11,6 @@ import (
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	log "github.com/sirupsen/logrus"
 )
 
 func TestResolveAntigravityRequestBaseURL(t *testing.T) {
@@ -304,70 +303,6 @@ func TestAntigravityPrepareRequestAuth_FetchesMissingProjectID(t *testing.T) {
 	}
 }
 
-func TestAntigravityRefreshToken_LogsCredentialNameWhenProjectIDFetchFails(t *testing.T) {
-	logger := log.StandardLogger()
-	oldLevel := logger.GetLevel()
-	oldHooks := logger.ReplaceHooks(make(log.LevelHooks))
-	hook := &captureAntigravityLogHook{}
-	logger.SetLevel(log.WarnLevel)
-	logger.AddHook(hook)
-	t.Cleanup(func() {
-		logger.SetLevel(oldLevel)
-		logger.ReplaceHooks(oldHooks)
-	})
-
-	executor := &AntigravityExecutor{}
-	auth := &cliproxyauth.Auth{
-		FileName: "sadadiyaparmar484@gmail.com.json",
-		Metadata: map[string]any{
-			"refresh_token": "refresh-token",
-		},
-	}
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.String() {
-		case "https://oauth2.googleapis.com/token":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"access_token":"new-access-token","expires_in":3600,"token_type":"Bearer"}`)),
-			}, nil
-		case "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"allowedTiers":[{"id":"standard-tier"}]}`)),
-			}, nil
-		case "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"done":true,"response":{}}`)),
-			}, nil
-		default:
-			t.Fatalf("unexpected request: %s", req.URL.String())
-			return nil, nil
-		}
-	}))
-
-	if _, err := executor.refreshToken(ctx, auth); err != nil {
-		t.Fatalf("refreshToken error: %v", err)
-	}
-
-	var projectLog string
-	for _, message := range hook.messages {
-		if strings.Contains(message, "ensure project id failed") {
-			projectLog = message
-			break
-		}
-	}
-	if projectLog == "" {
-		t.Fatalf("missing ensure project id failure log, messages=%v", hook.messages)
-	}
-	if !strings.Contains(projectLog, "credential=sadadiyaparmar484@gmail.com.json") {
-		t.Fatalf("project id failure log missing credential name: %q", projectLog)
-	}
-}
-
 func TestAntigravityPrepareRequestAuth_UpstreamForbiddenPreserves403(t *testing.T) {
 	executor := &AntigravityExecutor{}
 	auth := &cliproxyauth.Auth{Metadata: map[string]any{
@@ -410,74 +345,6 @@ func TestAntigravityBuildRequest_RejectsMissingProjectID(t *testing.T) {
 	if got := status.StatusCode(); got != http.StatusBadRequest {
 		t.Fatalf("status code = %d, want %d", got, http.StatusBadRequest)
 	}
-}
-
-func TestAntigravityBuildRequest_KeepsConnectionReusable(t *testing.T) {
-	executor := &AntigravityExecutor{}
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "project-1"}}
-
-	req, err := executor.buildRequest(context.Background(), auth, "token", "gemini-3.1-pro", []byte(`{"request":{}}`), false, "", "https://example.com")
-	if err != nil {
-		t.Fatalf("buildRequest error: %v", err)
-	}
-	if req.Close {
-		t.Fatal("buildRequest should not force Connection: close")
-	}
-	if got := req.Header.Get("Connection"); strings.EqualFold(got, "close") {
-		t.Fatalf("Connection header = %q, want keep-alive capable request", got)
-	}
-}
-
-func TestAntigravityHttpRequest_KeepsConnectionReusable(t *testing.T) {
-	executor := &AntigravityExecutor{}
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{
-		"access_token": "token",
-		"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
-	}}
-	var sawRequest bool
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		sawRequest = true
-		if req.Close {
-			t.Fatal("HttpRequest should not force Connection: close")
-		}
-		if got := req.Header.Get("Connection"); strings.EqualFold(got, "close") {
-			t.Fatalf("Connection header = %q, want keep-alive capable request", got)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
-		}, nil
-	}))
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1internal:generateContent", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := executor.HttpRequest(ctx, auth, req)
-	if err != nil {
-		t.Fatalf("HttpRequest error: %v", err)
-	}
-	if errClose := resp.Body.Close(); errClose != nil {
-		t.Fatalf("response body close error: %v", errClose)
-	}
-	if !sawRequest {
-		t.Fatal("round tripper did not observe request")
-	}
-}
-
-type captureAntigravityLogHook struct {
-	messages []string
-}
-
-func (h *captureAntigravityLogHook) Levels() []log.Level {
-	return log.AllLevels
-}
-
-func (h *captureAntigravityLogHook) Fire(entry *log.Entry) error {
-	h.messages = append(h.messages, entry.Message)
-	return nil
 }
 
 func assertNonSchemaRequestPreserved(t *testing.T, body map[string]any) {

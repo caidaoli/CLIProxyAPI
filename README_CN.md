@@ -49,15 +49,6 @@ CLIProxyAPI 是一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API �
 
 本 fork 包含以下上游仓库中没有的增强功能：
 
-### 通过 Gemini 实现 Web 搜索支持 (Antigravity)
-
-为 Antigravity 提供商启用基于 Gemini googleSearch 工具的网络搜索能力：
-- 自动检测来自 Claude/OpenAI API 格式的 `web_search` 工具请求
-- 自动切换模型至 `gemini-2.5-flash` 执行搜索查询
-- 将搜索请求转换为 Gemini 原生 googleSearch 工具格式
-- 解析 `groundingMetadata` 并转换为兼容格式的结果
-- 同时支持 Claude `tool_result` 和 OpenAI function response 格式
-
 ### 渐进式并行凭证加载
 
 默认文件存储启动路径会先绑定 HTTP 并安装文件系统监听，再扫描磁盘凭证：

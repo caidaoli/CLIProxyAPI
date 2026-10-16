@@ -85,8 +85,6 @@ type Params struct {
 	// Signature caching support
 	CurrentThinkingText   strings.Builder // Accumulates thinking text for signature caching
 	CurrentThinkingSigned bool            // Tracks whether the active thinking block already has its terminal signature
-	PseudoThinkingOpen    bool
-	PseudoThinkingTail    string
 
 	// Reverse map: sanitized Gemini function name → original Claude tool name.
 	// Populated lazily on the first response chunk from the original request JSON.
@@ -95,68 +93,6 @@ type Params struct {
 
 // toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
 var toolUseIDCounter uint64
-
-const (
-	pseudoThinkingOpenTag  = "<thinking>"
-	pseudoThinkingCloseTag = "</thinking>"
-)
-
-type pseudoThinkingSegment struct {
-	thinking bool
-	text     string
-}
-
-func consumePseudoThinkingSegments(params *Params, text string, final bool) []pseudoThinkingSegment {
-	if params == nil {
-		if text == "" {
-			return nil
-		}
-		return []pseudoThinkingSegment{{text: text}}
-	}
-
-	params.PseudoThinkingTail += text
-	segments := make([]pseudoThinkingSegment, 0, 2)
-	for params.PseudoThinkingTail != "" {
-		tag := pseudoThinkingOpenTag
-		if params.PseudoThinkingOpen {
-			tag = pseudoThinkingCloseTag
-		}
-
-		idx := strings.Index(params.PseudoThinkingTail, tag)
-		if idx >= 0 {
-			if prefix := params.PseudoThinkingTail[:idx]; prefix != "" {
-				segments = append(segments, pseudoThinkingSegment{thinking: params.PseudoThinkingOpen, text: prefix})
-			}
-			params.PseudoThinkingOpen = !params.PseudoThinkingOpen
-			params.PseudoThinkingTail = params.PseudoThinkingTail[idx+len(tag):]
-			continue
-		}
-
-		keep := 0
-		if !final {
-			keep = pseudoThinkingPartialSuffixLen(params.PseudoThinkingTail, tag)
-		}
-		if emit := params.PseudoThinkingTail[:len(params.PseudoThinkingTail)-keep]; emit != "" {
-			segments = append(segments, pseudoThinkingSegment{thinking: params.PseudoThinkingOpen, text: emit})
-		}
-		params.PseudoThinkingTail = params.PseudoThinkingTail[len(params.PseudoThinkingTail)-keep:]
-		break
-	}
-	return segments
-}
-
-func pseudoThinkingPartialSuffixLen(text, tag string) int {
-	maxLen := len(tag) - 1
-	if len(text) < maxLen {
-		maxLen = len(text)
-	}
-	for n := maxLen; n > 0; n-- {
-		if strings.HasPrefix(tag, text[len(text)-n:]) {
-			return n
-		}
-	}
-	return 0
-}
 
 func antigravityClaudeToolUseID(modelName string, functionCall gjson.Result, fallback string) string {
 	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
@@ -196,56 +132,8 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	params := (*param).(*Params)
 
-	output := make([]byte, 0, 1024)
-	appendEvent := func(event, payload string) {
-		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
-	}
-	appendThinkingText := func(text string) {
-		if text == "" {
-			return
-		}
-		if params.ResponseType != 2 {
-			if params.ResponseType != 0 {
-				appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-				params.ResponseIndex++
-			}
-			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
-			params.ResponseType = 2
-			params.CurrentThinkingText.Reset()
-		}
-		params.CurrentThinkingText.WriteString(text)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", text)
-		appendEvent("content_block_delta", string(data))
-		params.HasContent = true
-	}
-	appendText := func(text string) {
-		if text == "" {
-			return
-		}
-		if params.ResponseType != 1 {
-			if params.ResponseType != 0 {
-				appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-				params.ResponseIndex++
-			}
-			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-			params.ResponseType = 1
-		}
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", text)
-		appendEvent("content_block_delta", string(data))
-		params.HasContent = true
-	}
-	appendPseudoThinkingSegments := func(text string, final bool) {
-		for _, segment := range consumePseudoThinkingSegments(params, text, final) {
-			if segment.thinking {
-				appendThinkingText(segment.text)
-				continue
-			}
-			appendText(segment.text)
-		}
-	}
-
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		appendPseudoThinkingSegments("", true)
+		output := make([]byte, 0, 256)
 		if params.HasFirstResponse && !params.HasContent {
 			output = translatorcommon.AppendSSEEventString(output, "content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex), 3)
 			params.ResponseType = 1
@@ -259,6 +147,10 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		return [][]byte{}
 	}
 
+	output := make([]byte, 0, 1024)
+	appendEvent := func(event, payload string) {
+		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+	}
 	webSearchStreamMode := shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
 	appendThinkingSignature := func(signature, direction, targetKind string) {
 		if signature == "" || params.ResponseType != 2 {
@@ -428,12 +320,20 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 					if hasThoughtSignature {
 						signatureTargetsVisibleText = appendPartSignature(thoughtSignatureResult.String(), geminiClaudeCarrierNext, geminiClaudeCarrierText)
 					}
-					// Empty text parts must not close an active block; appendText
-					// already reuses an open text block and only opens a new one
-					// for non-empty segments.
-					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
-					if partText != "" || !finishReasonResult.Exists() {
-						appendPseudoThinkingSegments(partText, false)
+					if params.ResponseType == 1 {
+						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						appendEvent("content_block_delta", string(data))
+						params.HasContent = true
+					} else if partText != "" {
+						if params.ResponseType != 0 {
+							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+							params.ResponseIndex++
+						}
+						appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
+						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						appendEvent("content_block_delta", string(data))
+						params.ResponseType = 1
+						params.HasContent = true
 					}
 					if partText != "" {
 						params.HasSemanticContent = true
@@ -526,10 +426,6 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	if webSearchStreamMode && !params.HasWebSearchTool && params.HasFinishReason && params.WebSearchTextBuffer.Len() > 0 {
 		appendBufferedWebSearchTextBlock(params, appendEvent)
-	}
-
-	if params.HasFinishReason {
-		appendPseudoThinkingSegments("", true)
 	}
 
 	if params.HasUsageMetadata && params.HasFinishReason {
@@ -685,7 +581,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	thinkingSignature := ""
 	thinkingSignatureDirection := geminiClaudeCarrierStandalone
 	thinkingSignatureTargetKind := geminiClaudeCarrierText
-	pseudoParams := &Params{}
 	toolIDCounter := 0
 	hasToolCall := false
 	hasSemanticContent := false
@@ -726,17 +621,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		carrier, _ = sjson.SetBytes(carrier, "signature", formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind))
 		blocks = append(blocks, carrier)
 	}
-	appendPseudoSegments := func(text string, final bool) {
-		for _, segment := range consumePseudoThinkingSegments(pseudoParams, text, final) {
-			if segment.thinking {
-				flushText()
-				thinkingBuilder.WriteString(segment.text)
-				continue
-			}
-			flushThinking()
-			textBuilder.WriteString(segment.text)
-		}
-	}
 
 	if parts.IsArray() {
 		for _, part := range parts.Array() {
@@ -750,7 +634,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 
 			if functionCall := part.Get("functionCall"); functionCall.Exists() {
-				appendPseudoSegments("", true)
 				signatureAttachedToThought := false
 				isClaudeTarget := cache.GetModelGroup(modelName) == "claude"
 				if !isClaudeTarget && signature != "" && thinkingBuilder.Len() > 0 && thinkingSignature == "" {
@@ -838,7 +721,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 			if text.Exists() && text.String() != "" {
 				flushThinking()
-				appendPseudoSegments(text.String(), false)
+				textBuilder.WriteString(text.String())
 				hasSemanticContent = true
 				lastSemanticKind = geminiClaudeCarrierText
 				if visibleSignatureCarrier {
@@ -848,7 +731,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		}
 	}
 
-	appendPseudoSegments("", true)
 	flushThinking()
 	flushText()
 

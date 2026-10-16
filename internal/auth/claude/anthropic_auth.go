@@ -579,19 +579,6 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	// A 200 carrying no access_token is not a refresh: json.Unmarshal accepts any
-	// valid object (`{}`, `null`, an error envelope, a captive-portal page) and
-	// leaves AccessToken empty with a nil error. Reporting that as success would
-	// overwrite a working credential with an empty string. Not retryable — the
-	// upstream answered, it just refused to issue a token.
-	if strings.TrimSpace(tokenResp.AccessToken) == "" {
-		return nil, &refreshHTTPError{
-			status:    resp.StatusCode,
-			message:   "token response missing access_token",
-			retryable: false,
-		}
-	}
-
 	clearClaudeRefreshBlockedUntil(refreshToken)
 	if strings.TrimSpace(tokenResp.RefreshToken) == "" {
 		tokenResp.RefreshToken = refreshToken

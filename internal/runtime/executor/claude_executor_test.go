@@ -1360,10 +1360,10 @@ func TestApplyClaudeToolPrefix_SkipsBuiltinTools(t *testing.T) {
 	out := applyClaudeToolPrefix(input, "proxy_")
 
 	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "web_search" {
-		t.Fatalf("tools.0.name = %q, want %q (built-in should not be prefixed)", got, "web_search")
+		t.Fatalf("built-in tool name should not be prefixed: tools.0.name = %q, want %q", got, "web_search")
 	}
 	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "proxy_my_custom_tool" {
-		t.Fatalf("tools.1.name = %q, want %q", got, "proxy_my_custom_tool")
+		t.Fatalf("custom tool should be prefixed: tools.1.name = %q, want %q", got, "proxy_my_custom_tool")
 	}
 }
 
@@ -1521,14 +1521,6 @@ func TestStripClaudeToolPrefixFromStreamLine(t *testing.T) {
 	}
 	if got := gjson.GetBytes(payload, "content_block.name").String(); got != "alpha" {
 		t.Fatalf("content_block.name = %q, want %q", got, "alpha")
-	}
-}
-
-func TestGeminiToAntigravity_DefaultsToAgentRequestType(t *testing.T) {
-	input := []byte(`{"model":"gemini-3-flash","request":{"tools":[{"functionDeclarations":[{"name":"f"}]}]}}`)
-	out := geminiToAntigravity("gemini-3-flash", input, "")
-	if got := gjson.GetBytes(out, "requestType").String(); got != "agent" {
-		t.Fatalf("requestType = %q, want %q", got, "agent")
 	}
 }
 
@@ -3485,172 +3477,6 @@ func TestClaudeExecutor_ExecuteStream_InvalidGzipErrorBodyReturnsDecodeMessage(t
 		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
 		return err
 	})
-}
-
-func TestClaudeExecutor_Execute429UsesRetryAfterHeader(t *testing.T) {
-	var profileHits int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "123")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"limited"}}`))
-		case "/api/oauth/profile":
-			profileHits++
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"limits":[{"reset_at":"2099-01-01T00:00:00Z"}]}`))
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	err := executeClaudeForRetryAfterTest(t, server.URL, "key-123")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	retryAfter := retryAfterFromStatusErrTest(t, err)
-	if got, want := *retryAfter, 123*time.Second; got != want {
-		t.Fatalf("RetryAfter() = %v, want %v", got, want)
-	}
-	if profileHits != 0 {
-		t.Fatalf("profile endpoint hits = %d, want 0", profileHits)
-	}
-}
-
-func TestClaudeExecutor_Execute429UsesAnthropicRateLimitResetHeader(t *testing.T) {
-	resetAt := time.Now().UTC().Add(45 * time.Minute).Truncate(time.Second)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Anthropic-Ratelimit-Tokens-Reset", resetAt.Format(time.RFC3339))
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"limited"}}`))
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	err := executeClaudeForRetryAfterTest(t, server.URL, "key-123")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	retryAfter := retryAfterFromStatusErrTest(t, err)
-	if *retryAfter < 35*time.Minute || *retryAfter > 46*time.Minute {
-		t.Fatalf("RetryAfter() = %v, want about 45m", *retryAfter)
-	}
-}
-
-func TestClaudeExecutor_Execute429UsesResetFromErrorBodyBeforeProfile(t *testing.T) {
-	resetAt := time.Now().UTC().Add(90 * time.Minute).Truncate(time.Second)
-	var profileHits int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"type":"error","error":{"type":"rate_limit_error","message":"limited","reset_at":%q}}`, resetAt.Format(time.RFC3339))))
-		case "/api/oauth/profile":
-			profileHits++
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"limits":[{"reset_at":"2099-01-01T00:00:00Z"}]}`))
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	err := executeClaudeForRetryAfterTest(t, server.URL, "sk-ant-oat-test")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	retryAfter := retryAfterFromStatusErrTest(t, err)
-	if *retryAfter < 80*time.Minute || *retryAfter > 91*time.Minute {
-		t.Fatalf("RetryAfter() = %v, want about 90m", *retryAfter)
-	}
-	if profileHits != 0 {
-		t.Fatalf("profile endpoint hits = %d, want 0", profileHits)
-	}
-}
-
-func TestClaudeExecutor_Execute429QueriesOAuthProfileWhenRetryAfterMissing(t *testing.T) {
-	resetAt := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
-	var profileHits int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/messages":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"limited"}}`))
-		case "/api/oauth/profile":
-			profileHits++
-			if got := r.Header.Get("Authorization"); got != "Bearer sk-ant-oat-test" {
-				t.Fatalf("Authorization = %q, want OAuth bearer token", got)
-			}
-			if got := r.Header.Get("Anthropic-Beta"); got != "oauth-2025-04-20" {
-				t.Fatalf("Anthropic-Beta = %q, want oauth-2025-04-20", got)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"limits":[{"name":"5h","reset_at":%q}]}`, resetAt.Format(time.RFC3339))))
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	err := executeClaudeForRetryAfterTest(t, server.URL, "sk-ant-oat-test")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	retryAfter := retryAfterFromStatusErrTest(t, err)
-	if *retryAfter < 110*time.Minute || *retryAfter > 121*time.Minute {
-		t.Fatalf("RetryAfter() = %v, want about 2h", *retryAfter)
-	}
-	if profileHits != 1 {
-		t.Fatalf("profile endpoint hits = %d, want 1", profileHits)
-	}
-}
-
-func executeClaudeForRetryAfterTest(t *testing.T, baseURL string, apiKey string) error {
-	t.Helper()
-
-	executor := NewClaudeExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"api_key":  apiKey,
-		"base_url": baseURL,
-	}}
-	if isClaudeOAuthToken(apiKey) {
-		auth.Metadata = claudeOAuthTestMetadata()
-	}
-	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":1}`)
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-3-5-sonnet-20241022",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-	return err
-}
-
-func retryAfterFromStatusErrTest(t *testing.T, err error) *time.Duration {
-	t.Helper()
-
-	statusProvider, ok := err.(interface {
-		StatusCode() int
-		RetryAfter() *time.Duration
-	})
-	if !ok {
-		t.Fatalf("expected status error with retry-after, got %T: %v", err, err)
-	}
-	if got := statusProvider.StatusCode(); got != http.StatusTooManyRequests {
-		t.Fatalf("StatusCode() = %d, want %d", got, http.StatusTooManyRequests)
-	}
-	retryAfter := statusProvider.RetryAfter()
-	if retryAfter == nil {
-		t.Fatal("RetryAfter() = nil")
-	}
-	return retryAfter
 }
 
 func testClaudeExecutorInvalidCompressedErrorBody(

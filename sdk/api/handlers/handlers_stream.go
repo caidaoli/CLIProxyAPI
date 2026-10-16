@@ -209,7 +209,6 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 			observePluginExecutorStreamUsage(responseProtocol, chunk.Payload, &streamUsage)
 			payload := cloneBytes(chunk.Payload)
 			if streamInterceptorsActive {
-				payload = cloneBytes(chunk.Payload)
 				chunkReq := pluginapi.StreamChunkInterceptRequest{
 					RequestID:       lifecycle.requestID(),
 					SourceFormat:    responseProtocol,
@@ -308,14 +307,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
-	toolCompatibleProviders := filterProvidersByToolCompatibility(providers, rawJSON)
-	if len(providers) > 0 && len(toolCompatibleProviders) == 0 {
-		errChan := make(chan *interfaces.ErrorMessage, 1)
-		errChan <- &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("mixed search and non-search tools are not supported by available providers for model %s", modelName)}
-		close(errChan)
-		return nil, nil, errChan
-	}
-	providers = toolCompatibleProviders
 	reqMeta := requestExecutionMetadata(ctx)
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path

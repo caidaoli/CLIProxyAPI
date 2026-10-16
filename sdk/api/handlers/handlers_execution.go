@@ -61,11 +61,6 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
-	toolCompatibleProviders := filterProvidersByToolCompatibility(providers, rawJSON)
-	if len(providers) > 0 && len(toolCompatibleProviders) == 0 {
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("mixed search and non-search tools are not supported by available providers for model %s", modelName)}
-	}
-	providers = toolCompatibleProviders
 	reqMeta := requestExecutionMetadata(ctx)
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
@@ -141,11 +136,6 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
-	toolCompatibleProviders := filterProvidersByToolCompatibility(providers, rawJSON)
-	if len(providers) > 0 && len(toolCompatibleProviders) == 0 {
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("mixed search and non-search tools are not supported by available providers for model %s", modelName)}
-	}
-	providers = toolCompatibleProviders
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)

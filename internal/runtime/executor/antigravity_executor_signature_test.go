@@ -765,7 +765,7 @@ func TestAntigravityStreamDoesNotPrependLeadingUserForClaudeTarget(t *testing.T)
 	}
 }
 
-func TestAntigravityRequestPathsFallbackAcrossEndpoints(t *testing.T) {
+func TestAntigravityRequestPathsDoNotFallbackEndpoints(t *testing.T) {
 	type upstreamCall struct {
 		host string
 		path string
@@ -792,7 +792,7 @@ func TestAntigravityRequestPathsFallbackAcrossEndpoints(t *testing.T) {
 	for _, route := range routes {
 		for _, failure := range failures {
 			t.Run(route.name+"/"+failure.name, func(t *testing.T) {
-				calls := make([]upstreamCall, 0, 3)
+				calls := make([]upstreamCall, 0, 1)
 				transportErr := errors.New("daily endpoint unavailable")
 				ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 					calls = append(calls, upstreamCall{host: req.URL.Host, path: req.URL.Path})
@@ -844,31 +844,14 @@ func TestAntigravityRequestPathsFallbackAcrossEndpoints(t *testing.T) {
 						t.Fatalf("request error = %v, want status 429", errRequest)
 					}
 				}
-				for _, call := range calls {
-					if call.path != route.wantPath {
-						t.Fatalf("upstream path = %q, want %q", call.path, route.wantPath)
-					}
+				if len(calls) != 1 {
+					t.Fatalf("upstream calls = %v, want exactly one daily endpoint request", calls)
 				}
-				if route.kind == "count" {
-					if len(calls) != 1 {
-						t.Fatalf("count tokens upstream calls = %v, want one request", calls)
-					}
-					if got, want := calls[0].host, resolveHost(antigravityBaseURLDaily); got != want {
-						t.Fatalf("upstream host = %q, want %q", got, want)
-					}
-					return
+				if got, want := calls[0].host, resolveHost(antigravityBaseURLDaily); got != want {
+					t.Fatalf("upstream host = %q, want %q", got, want)
 				}
-				wantHosts := make([]string, 0, len(antigravityBaseURLFallbackOrder(auth)))
-				for _, base := range antigravityBaseURLFallbackOrder(auth) {
-					wantHosts = append(wantHosts, resolveHost(base))
-				}
-				if len(calls) != len(wantHosts) {
-					t.Fatalf("upstream calls = %v, want fallback across %v", calls, wantHosts)
-				}
-				for i, call := range calls {
-					if call.host != wantHosts[i] {
-						t.Fatalf("upstream host #%d = %q, want %q (calls=%v)", i, call.host, wantHosts[i], calls)
-					}
+				if got := calls[0].path; got != route.wantPath {
+					t.Fatalf("upstream path = %q, want %q", got, route.wantPath)
 				}
 			})
 		}

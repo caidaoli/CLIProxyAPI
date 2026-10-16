@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -310,25 +309,5 @@ func setXAIVersionProxyURLForTest(proxyURL string) func() {
 		xaiClientVersionMu.Lock()
 		xaiVersionProxyURL = old
 		xaiClientVersionMu.Unlock()
-	}
-}
-
-type xaiVersionTransport func(*http.Request) (*http.Response, error)
-
-func (f xaiVersionTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-func TestFetchXAINPMLatestVersionPreservesCallerContext(t *testing.T) {
-	client := &http.Client{Transport: xaiVersionTransport(func(req *http.Request) (*http.Response, error) {
-		if _, ok := req.Context().Deadline(); ok {
-			t.Fatal("npm request unexpectedly has a deadline")
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"version":"1.0.52"}`))}, nil
-	})}
-	version, err := FetchXAINPMLatestVersion(context.Background(), client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != "1.0.52" {
-		t.Fatalf("version = %q", version)
 	}
 }

@@ -25,6 +25,8 @@ const (
 	XAIClientVersionServerFloor = "1.0.13"
 	// XAIVersionRefreshInterval is the periodic interval to check for Grok CLI updates from npm.
 	XAIVersionRefreshInterval = 3 * time.Hour
+	// XAIVersionFetchTimeout is the maximum duration for a single npm registry lookup.
+	XAIVersionFetchTimeout = 10 * time.Second
 )
 
 var (
@@ -114,11 +116,14 @@ func FetchXAINPMLatestVersion(ctx context.Context, client *http.Client) (string,
 		ctx = context.Background()
 	}
 
+	fetchCtx, cancel := context.WithTimeout(ctx, XAIVersionFetchTimeout)
+	defer cancel()
+
 	xaiClientVersionMu.RLock()
 	registryURL := xaiNPMRegistryURL
 	xaiClientVersionMu.RUnlock()
 
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, nil)
+	req, errReq := http.NewRequestWithContext(fetchCtx, http.MethodGet, registryURL, nil)
 	if errReq != nil {
 		return "", fmt.Errorf("create npm registry request: %w", errReq)
 	}
@@ -164,9 +169,9 @@ func xaiVersionHTTPClient() *http.Client {
 	proxyURL := xaiVersionProxyURL
 	xaiClientVersionMu.RUnlock()
 	if strings.TrimSpace(proxyURL) == "" {
-		return &http.Client{}
+		return &http.Client{Timeout: XAIVersionFetchTimeout}
 	}
-	return NewProxyAwareHTTPClient(context.Background(), &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxyURL}}, nil, 0)
+	return NewProxyAwareHTTPClient(context.Background(), &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxyURL}}, nil, XAIVersionFetchTimeout)
 }
 
 func acceptableXAIClientVersion(version string) bool {

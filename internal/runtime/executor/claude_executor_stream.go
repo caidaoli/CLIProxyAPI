@@ -243,6 +243,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		diagnosticsState = claudeDiagnosticsRequestState{}
 	}
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
+	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
 	if cchSigning {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {
@@ -287,8 +288,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		AuthValue: authValue,
 	})
 
-	rawHTTPClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient := reporter.TrackHTTPClient(rawHTTPClient)
+	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := doClaudeUpstreamRequest(httpClient, httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -304,14 +305,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			helps.RecordAPIResponseError(ctx, e.cfg, decErr)
 			msg := fmt.Sprintf("failed to decode error response body: %v", decErr)
 			helps.LogWithRequestID(ctx).Warn(msg)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("response body close error: %v", errClose)
-			}
+			errClassified := classifyClaudeUpstreamErrorWithCooling(httpResp.StatusCode, httpResp.Header, []byte(msg), e.modelLevelCooling())
 			if fastRequest {
-				errClassified := classifyClaudeUpstreamErrorWithCooling(httpResp.StatusCode, httpResp.Header, []byte(msg), e.modelLevelCooling())
-				return nil, wrapClaudeFastRequestError(true, httpResp.StatusCode, errClassified)
+				return nil, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errClassified)
 			}
-			return nil, e.claudeStatusErr(ctx, rawHTTPClient, apiKey, baseURL, httpResp.StatusCode, httpResp.Header, []byte(msg))
+			return nil, errClassified
 		}
 		b, readErr := io.ReadAll(errBody)
 		if readErr != nil {
@@ -328,7 +326,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if fastRequest {
 			return nil, newClaudeFastDirectResponseError(httpResp, b)
 		}
-		return nil, e.claudeStatusErr(ctx, rawHTTPClient, apiKey, baseURL, httpResp.StatusCode, httpResp.Header, b)
+		return nil, classifyClaudeUpstreamErrorWithCooling(httpResp.StatusCode, httpResp.Header, b, e.modelLevelCooling())
 	}
 	decodedBody, err := decodeResponseBody(httpResp.Body, claudeResponseContentEncoding(httpResp.Header))
 	if err != nil {

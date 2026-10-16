@@ -14,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -231,45 +230,6 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
-}
-
-func filterProvidersByToolCompatibility(providers []string, rawJSON []byte) []string {
-	if len(providers) == 0 {
-		return nil
-	}
-	if len(rawJSON) == 0 {
-		return providers
-	}
-
-	tools := gjson.GetBytes(rawJSON, "tools")
-	if !tools.IsArray() || len(tools.Array()) == 0 {
-		return providers
-	}
-
-	hasSearchTool := false
-	hasNonSearchTool := false
-	for _, tool := range tools.Array() {
-		if tool.Get("google_search").Exists() || tool.Get("type").String() == "web_search" {
-			hasSearchTool = true
-			continue
-		}
-		if tool.Get("type").String() == "function" || tool.Get("code_execution").Exists() || tool.Get("url_context").Exists() {
-			hasNonSearchTool = true
-		}
-	}
-
-	if !(hasSearchTool && hasNonSearchTool) {
-		return providers
-	}
-
-	filtered := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		if strings.EqualFold(strings.TrimSpace(provider), "antigravity") {
-			continue
-		}
-		filtered = append(filtered, provider)
-	}
-	return filtered
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {

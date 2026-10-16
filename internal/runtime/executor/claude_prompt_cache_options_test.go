@@ -600,7 +600,7 @@ func TestClaudeExecutor_CountTokens_StripsPromptCacheOptions(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_CountTokensUpstream_PreservesPromptCacheOptionsPayloadOverride(t *testing.T) {
+func TestClaudeExecutor_CountTokensUpstream_StripsPromptCacheOptions_EvenWithPayloadRule(t *testing.T) {
 	var seenBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -648,68 +648,8 @@ func TestClaudeExecutor_CountTokensUpstream_PreservesPromptCacheOptionsPayloadOv
 	if len(upstreamResp.Payload) == 0 {
 		t.Fatal("expected non-empty countTokensUpstream payload")
 	}
-	if got := gjson.GetBytes(seenBody, "prompt_cache_options.mode").String(); got != "explicit" {
-		t.Fatalf("payload override prompt_cache_options.mode = %q, want explicit: %s", got, seenBody)
-	}
-}
-
-func TestClaudeExecutor_PreservesPromptCacheOptionsPayloadOverride(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
-			var seenBody []byte
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, errRead := io.ReadAll(r.Body)
-				if errRead != nil {
-					t.Errorf("read upstream request: %v", errRead)
-				}
-				seenBody = bytes.Clone(body)
-				writeClaudeSSEMockResponse(w)
-			}))
-			defer server.Close()
-
-			executor := NewClaudeExecutor(&config.Config{
-				Payload: config.PayloadConfig{
-					Override: []config.PayloadRule{{
-						Models: []config.PayloadModelRule{{Name: "claude-3-5-sonnet-20241022"}},
-						Params: map[string]any{"prompt_cache_options.mode": "explicit"},
-					}},
-				},
-			})
-			auth := &cliproxyauth.Auth{Attributes: map[string]string{
-				"api_key": "key-123", "base_url": server.URL,
-			}}
-			originalReq := []byte(`{
-				"model": "claude-3-5-sonnet-20241022",
-				"prompt_cache_options": {"mode": "explicit", "proxy_only": true},
-				"messages": [{"role": "user", "content": "Explain prompt caching"}]
-			}`)
-			req := cliproxyexecutor.Request{Model: "claude-3-5-sonnet-20241022", Payload: originalReq}
-			opts := cliproxyexecutor.Options{
-				Stream: stream, SourceFormat: sdktranslator.FromString("openai"), OriginalRequest: originalReq,
-			}
-			if stream {
-				result, errStream := executor.ExecuteStream(context.Background(), auth, req, opts)
-				if errStream != nil {
-					t.Fatalf("ExecuteStream() error = %v", errStream)
-				}
-				for chunk := range result.Chunks {
-					if chunk.Err != nil {
-						t.Fatalf("stream chunk error = %v", chunk.Err)
-					}
-				}
-			} else if _, errExecute := executor.Execute(context.Background(), auth, req, opts); errExecute != nil {
-				t.Fatalf("Execute() error = %v", errExecute)
-			}
-			if got := gjson.GetBytes(seenBody, "prompt_cache_options.mode").String(); got != "explicit" {
-				t.Fatalf("payload override prompt_cache_options.mode = %q, want explicit: %s", got, seenBody)
-			}
-			if gjson.GetBytes(seenBody, "prompt_cache_options.proxy_only").Exists() {
-				t.Fatalf("client proxy options must be stripped before payload rules: %s", seenBody)
-			}
-			if count := countCacheControls(seenBody); count != 0 {
-				t.Fatalf("explicit client mode received %d automatic cache breakpoints: %s", count, seenBody)
-			}
-		})
+	if gjson.GetBytes(seenBody, "prompt_cache_options").Exists() {
+		t.Fatalf("prompt_cache_options should not be forwarded in count_tokens upstream even if injected by payload rule: %s", string(seenBody))
 	}
 }
 

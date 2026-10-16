@@ -392,59 +392,6 @@ func TestRefreshTokensWithRetry_429BlocksImmediateReplay(t *testing.T) {
 	}
 }
 
-func TestRefreshTokens_RejectsResponseWithoutAccessToken(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-	}{
-		{name: "empty object", body: `{}`},
-		{name: "json null", body: `null`},
-		{name: "error envelope served as 200", body: `{"error":{"type":"invalid_request_error","message":"refresh token revoked"}}`},
-		{name: "blank access token", body: `{"access_token":"   ","refresh_token":"new-refresh","expires_in":3600}`},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resetClaudeRefreshState()
-			defer resetClaudeRefreshState()
-
-			var calls int32
-			auth := &ClaudeAuth{
-				httpClient: &http.Client{
-					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-						atomic.AddInt32(&calls, 1)
-						return &http.Response{
-							StatusCode: http.StatusOK,
-							Body:       io.NopCloser(strings.NewReader(tc.body)),
-							Header:     make(http.Header),
-							Request:    req,
-						}, nil
-					}),
-				},
-			}
-
-			td, err := auth.RefreshTokens(context.Background(), "dummy_refresh_token")
-			if err == nil {
-				t.Fatalf("expected refresh error for response without access_token, got token %#v", td)
-			}
-			if td != nil {
-				t.Fatalf("expected nil token data on failed refresh, got %#v", td)
-			}
-			if !strings.Contains(err.Error(), "access_token") {
-				t.Fatalf("expected error to mention access_token, got %v", err)
-			}
-
-			// A body that will never yield a token must not be replayed.
-			if _, err = auth.RefreshTokensWithRetry(context.Background(), "dummy_refresh_token", 3); err == nil {
-				t.Fatalf("expected RefreshTokensWithRetry to fail")
-			}
-			if got := atomic.LoadInt32(&calls); got != 2 {
-				t.Fatalf("expected 1 call per refresh with no retry, got %d total", got)
-			}
-		})
-	}
-}
-
 func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	resetClaudeRefreshState()
 	defer resetClaudeRefreshState()

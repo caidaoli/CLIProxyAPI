@@ -70,8 +70,6 @@ func newClaudeOAuthCancellationError(ctx context.Context, oauth bool, err error)
 	return &claudeOAuthCancellationError{cause: cause}
 }
 
-const claudeOAuthProfilePath = "/api/oauth/profile"
-
 func shouldSanitizeClaudeMessagesForUpstream(baseModel string) bool {
 	return sigcompat.SignatureProviderFromModelName(baseModel) == sigcompat.SignatureProviderClaude
 }

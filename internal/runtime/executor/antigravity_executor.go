@@ -449,6 +449,7 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 		// Fall through so NewProxyAwareHTTPClient reports the failure and applies the
 		// context transport fallback, preserving the previous behavior.
 	}
+
 	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, timeout)
 	// Direct requests share an HTTP/1.1 pool only within the selected credential.
 	if client.Transport == nil {

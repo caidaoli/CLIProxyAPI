@@ -208,7 +208,6 @@ Modified:
 - `sdk/cliproxy/auth/selector.go`、`scheduler.go`、`conductor.go`（+tests）— 按凭证 priority 分组、单/混合 provider 调度；使用统一的 `request-retry`/`max-retry-credentials`，不得恢复 selector 级 retry override
 - `sdk/cliproxy/auth/cooldown_state.go`（+tests）— 文件 cooldown store、启动恢复与按 auth 增量清理
 - `sdk/cliproxy/auth/auto_refresh_loop.go`、`persist_policy.go` — 刷新失败生命周期处理；`delete-unauthorized-auth` 对终态无效凭证及 401 生效
-- `internal/runtime/executor/xai_executor.go` — 删除前执行 xAI 凭证探测，避免把瞬时刷新错误误判为终态失效
 
 合并保护:
 - 凭证删除/替换必须串行完成并同步 token store、watcher 与调度器状态；多 provider 清理按类型执行。
@@ -254,12 +253,10 @@ Fork-only:
 
 Modified:
 - `internal/config/config_types.go`、`internal/runtime/executor/codex_executor_{request,execute,stream}.go`、`codex_openai_images.go`、`codex_websockets_{request,execute,stream,duplex}.go`（+tests）— `codex.identity-confuse` 按凭证改写 Codex 会话标识并在响应中还原；合并上游时不得删除配置、HTTP/WebSocket 链路和测试。
-- `internal/runtime/executor/antigravity_executor.go`（+tests）— 稳定 fallback project ID、404 base URL fallback、降低 refresh skew、transport 复用与 request-scoped 404 cooling 处理
-- `internal/translator/antigravity/` — OpenAI `type: "web_search"` 注入、伪 thinking block 规范化
-- `internal/runtime/executor/claude_executor.go`（+tests）— 可配置 Claude masquerading/default headers
-- `internal/runtime/executor/xai_executor.go`、`xai_websockets_executor.go`（+tests）— refresh error 语义、凭证探测/清理、`prompt_cache_key` 与原生 web search 注入
-- `internal/translator/codex/`（+tests）— Responses reasoning tokens 映射为 Claude `thinking_tokens`、tool-call streaming 与 cached token 暴露
-- `sdk/api/handlers/handlers.go`（+tests）— Codex chat completions 暴露 cached tokens；mixed search/function tool calls 路由到兼容 provider
+
+合并保护:
+- Antigravity / Claude / xAI 的 executor、`internal/auth/claude`、`internal/translator/antigravity/`、`internal/translator/codex/claude/` 不保留 fork 改动，合并时直接取上游；`sdk/api/handlers` 不按工具类型过滤 provider。
+- 上游 `api_tools_test.go` 的 `TestAPICallUsesXAITokenStorageWithoutRefresh`、`TestAPICallPrioritizesStorageAccessTokenOverMetadataIDToken` 在 fork 中删除：fork 管理端 api-call 经 executor 注入凭证，不支持仅存于 Storage 的 xAI token。合并时不要恢复。
 
 `internal/translator/` 仍是受保护路径。合并冲突必须按协议结构解析后验证，不得用字符串拼接或脆弱源码测试掩盖行为差异。
 

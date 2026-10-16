@@ -57,12 +57,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		return nil, errProject
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
-	resolvedModel := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
-	if resolvedModel == "" {
-		resolvedModel = modelName
-	}
-	payload = helps.SetStringIfDifferent(payload, "model", resolvedModel)
-	modelName = resolvedModel
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
 	if maxOut := gjson.GetBytes(payload, "request.generationConfig.maxOutputTokens"); maxOut.Exists() && maxOut.Type == gjson.Number {
@@ -494,17 +488,6 @@ func antigravityConfiguredUserAgent(auth *cliproxyauth.Auth) string {
 	return raw
 }
 
-var antigravityBaseURLFallbackOrder = func(auth *cliproxyauth.Auth) []string {
-	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
-		return []string{base}
-	}
-	return []string{
-		antigravityBaseURLDaily,
-		antigravityBaseURLProd,
-		antigravitySandboxBaseURLDaily,
-	}
-}
-
 func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
@@ -575,17 +558,6 @@ func generateRequestID() string {
 
 func generateImageGenRequestID() string {
 	return fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), uuid.NewString())
-}
-
-func generateProjectID() string {
-	adjectives := []string{"useful", "bright", "swift", "calm", "bold"}
-	nouns := []string{"fuze", "wave", "spark", "flow", "core"}
-	randSourceMutex.Lock()
-	adj := adjectives[randSource.Intn(len(adjectives))]
-	noun := nouns[randSource.Intn(len(nouns))]
-	randSourceMutex.Unlock()
-	randomPart := strings.ToLower(uuid.NewString())[:5]
-	return adj + "-" + noun + "-" + randomPart
 }
 
 func generateSessionID() string {
