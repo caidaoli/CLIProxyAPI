@@ -2545,7 +2545,10 @@ func acknowledgeInitialLoadUntilDone(t testing.TB, queue <-chan AuthUpdateBatch,
 	for {
 		select {
 		case batch := <-queue:
-			batch.Result <- loadedResults(batch.Updates)
+			// Late fsnotify events dispatch regular batches without a result channel.
+			if batch.Result != nil {
+				batch.Result <- loadedResults(batch.Updates)
+			}
 		case <-done:
 			return
 		case <-time.After(2 * time.Second):
