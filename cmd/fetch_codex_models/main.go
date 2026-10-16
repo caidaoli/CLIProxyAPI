@@ -30,7 +30,6 @@ import (
 	"time"
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexapi"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -43,6 +42,7 @@ import (
 )
 
 const (
+	codexModelsBaseURL       = "https://chatgpt.com/backend-api/codex"
 	codexModelsPath          = "/models"
 	defaultClientVersion     = "0.159.0"
 	defaultCodexUserAgent    = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
@@ -199,7 +199,7 @@ func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth 
 	}
 
 	svc := codexauth.NewCodexAuthWithProxyURL(nil, auth.ProxyURL)
-	tokenData, errRefresh := svc.RefreshTokensWithRetry(ctx, refreshToken, codexAuthSourceLabel(auth), 3)
+	tokenData, errRefresh := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if errRefresh != nil {
 		return "", false, errRefresh
 	}
@@ -245,27 +245,6 @@ func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth 
 	}
 
 	return tokenData.AccessToken, true, nil
-}
-
-func codexAuthSourceLabel(auth *coreauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if auth.Metadata != nil {
-		if email, ok := auth.Metadata["email"].(string); ok {
-			email = strings.TrimSpace(email)
-			if email != "" {
-				return email
-			}
-		}
-	}
-	if label := strings.TrimSpace(auth.Label); label != "" {
-		return label
-	}
-	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		return filepath.Base(fileName)
-	}
-	return strings.TrimSpace(auth.ID)
 }
 
 func fetchModels(ctx context.Context, auth *coreauth.Auth, accessToken, clientVersion string) ([]byte, int, error) {
@@ -381,7 +360,7 @@ func ensureBaselineModel(raw []byte) ([]byte, int, error) {
 }
 
 func codexModelsURL(clientVersion string) (string, error) {
-	u, err := url.Parse(strings.TrimSuffix(codexapi.BaseURLFromEnv(), "/") + codexModelsPath)
+	u, err := url.Parse(codexModelsBaseURL + codexModelsPath)
 	if err != nil {
 		return "", err
 	}

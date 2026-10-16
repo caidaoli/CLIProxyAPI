@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -51,102 +50,6 @@ func TestCodexExecutorExecuteNormalizesNullInstructions(t *testing.T) {
 	}
 	if gjson.GetBytes(gotBody, "instructions").String() != "" {
 		t.Fatalf("instructions = %q, want empty string", gjson.GetBytes(gotBody, "instructions").String())
-	}
-}
-
-func TestCodexExecutorExecuteStripsIntermediaryUpdatesWhenEnabled(t *testing.T) {
-	for _, mode := range []string{"compat", "native"} {
-		t.Run(mode, func(t *testing.T) {
-			var gotBody []byte
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body)
-				gotBody = body
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
-			}))
-			defer server.Close()
-
-			executor := NewCodexExecutor(&config.Config{
-				Codex: config.CodexConfig{
-					StripIntermediaryUpdates: true,
-				},
-			})
-			auth := &cliproxyauth.Auth{Attributes: map[string]string{
-				"base_url": server.URL,
-				"api_key":  "test",
-			}}
-
-			headers := http.Header{}
-			if mode == "native" {
-				headers.Set(codexResponsesLiteHeader, "true")
-			}
-
-			_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "gpt-5.4",
-				Payload: []byte(`{"model":"gpt-5.4","instructions":"before\n\n## Intermediary updates\n- noisy updates\n## Final answer instructions\nkeep this","input":"hello"}`),
-			}, cliproxyexecutor.Options{
-				SourceFormat: sdktranslator.FromString("openai-response"),
-				Stream:       false,
-				Headers:      headers,
-			})
-			if err != nil {
-				t.Fatalf("Execute error: %v", err)
-			}
-
-			instructions := gjson.GetBytes(gotBody, "instructions").String()
-			if strings.Contains(instructions, "Intermediary updates") || strings.Contains(instructions, "noisy updates") {
-				t.Fatalf("intermediary updates were not stripped: %q", instructions)
-			}
-			if !strings.Contains(instructions, "before") || !strings.Contains(instructions, "## Final answer instructions") {
-				t.Fatalf("surrounding instructions were not preserved: %q", instructions)
-			}
-		})
-	}
-}
-
-func TestCodexExecutorExecuteKeepsIntermediaryUpdatesByDefault(t *testing.T) {
-	for _, mode := range []string{"compat", "native"} {
-		t.Run(mode, func(t *testing.T) {
-			var gotBody []byte
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body)
-				gotBody = body
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
-			}))
-			defer server.Close()
-
-			executor := NewCodexExecutor(&config.Config{})
-			auth := &cliproxyauth.Auth{Attributes: map[string]string{
-				"base_url": server.URL,
-				"api_key":  "test",
-			}}
-
-			headers := http.Header{}
-			if mode == "native" {
-				headers.Set(codexResponsesLiteHeader, "true")
-			}
-
-			_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "gpt-5.4",
-				Payload: []byte(`{"model":"gpt-5.4","instructions":"before\n\n## Intermediary updates\n- noisy updates\n## Final answer instructions\nkeep this","input":"hello"}`),
-			}, cliproxyexecutor.Options{
-				SourceFormat: sdktranslator.FromString("openai-response"),
-				Stream:       false,
-				Headers:      headers,
-			})
-			if err != nil {
-				t.Fatalf("Execute error: %v", err)
-			}
-
-			instructions := gjson.GetBytes(gotBody, "instructions").String()
-			if !strings.Contains(instructions, "## Intermediary updates") || !strings.Contains(instructions, "noisy updates") {
-				t.Fatalf("intermediary updates were stripped by default: %q", instructions)
-			}
-			if !strings.Contains(instructions, "## Final answer instructions") {
-				t.Fatalf("following instructions were not preserved: %q", instructions)
-			}
-		})
 	}
 }
 

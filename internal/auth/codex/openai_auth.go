@@ -195,28 +195,17 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 // This method is called when an access token has expired. It makes a request to the
 // token endpoint to obtain a new set of tokens.
 func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
-	return o.RefreshTokensWithClientID(ctx, refreshToken, "")
-}
-
-// RefreshTokensWithClientID refreshes a token with the OAuth client that issued it.
-// An empty client ID keeps the native Codex login behavior.
-func (o *CodexAuth) RefreshTokensWithClientID(ctx context.Context, refreshToken, clientID string) (*CodexTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" {
-		clientID = ClientID
-	}
 
-	refreshKey := clientID + "\x00" + refreshToken
-	result, err, _ := codexRefreshGroup.Do(refreshKey, func() (interface{}, error) {
+	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
 		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), codexRefreshTimeout)
 		defer cancelRefresh()
-		return o.refreshTokensSingleFlight(refreshCtx, refreshToken, clientID)
+		return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
 	})
 	if err != nil {
 		return nil, err
@@ -228,9 +217,9 @@ func (o *CodexAuth) RefreshTokensWithClientID(ctx context.Context, refreshToken,
 	return tokenData, nil
 }
 
-func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken, clientID string) (*CodexTokenData, error) {
+func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	data := url.Values{
-		"client_id":     {clientID},
+		"client_id":     {ClientID},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 		"scope":         {"openid profile email"},
@@ -273,14 +262,6 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken,
 
 	if errUnmarshal := json.Unmarshal(body, &tokenResp); errUnmarshal != nil {
 		return nil, fmt.Errorf("failed to parse refresh response: %w", errUnmarshal)
-	}
-
-	// A 200 carrying no access_token is not a refresh: json.Unmarshal accepts any
-	// valid object (`{}`, `null`, an error envelope, a captive-portal page) and
-	// leaves AccessToken empty with a nil error. Reporting that as success would
-	// overwrite a working credential with an empty string.
-	if strings.TrimSpace(tokenResp.AccessToken) == "" {
-		return nil, fmt.Errorf("refresh response missing access_token")
 	}
 
 	// Extract account ID from ID token
@@ -333,14 +314,8 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 // RefreshTokensWithRetry refreshes tokens with a built-in retry mechanism.
 // It attempts to refresh the tokens up to a specified maximum number of retries,
 // with an exponential backoff strategy to handle transient network errors.
-func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, sourceLabel string, maxRetries int) (*CodexTokenData, error) {
-	return o.RefreshTokensWithRetryAndClientID(ctx, refreshToken, "", sourceLabel, maxRetries)
-}
-
-// RefreshTokensWithRetryAndClientID retries refreshes with the OAuth client that issued the token.
-func (o *CodexAuth) RefreshTokensWithRetryAndClientID(ctx context.Context, refreshToken, clientID, sourceLabel string, maxRetries int) (*CodexTokenData, error) {
+func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
 	var lastErr error
-	logLabel := refreshLogSourceLabel(sourceLabel)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
@@ -352,28 +327,20 @@ func (o *CodexAuth) RefreshTokensWithRetryAndClientID(ctx context.Context, refre
 			}
 		}
 
-		tokenData, err := o.RefreshTokensWithClientID(ctx, refreshToken, clientID)
+		tokenData, err := o.RefreshTokens(ctx, refreshToken)
 		if err == nil {
 			return tokenData, nil
 		}
 		if isNonRetryableRefreshErr(err) {
-			log.Warnf("Token refresh attempt %d failed with non-retryable error%s: %v", attempt+1, logLabel, err)
+			log.Warnf("Token refresh attempt %d failed with non-retryable error: %v", attempt+1, err)
 			return nil, err
 		}
 
 		lastErr = err
-		log.Warnf("Token refresh attempt %d failed%s: %v", attempt+1, logLabel, err)
+		log.Warnf("Token refresh attempt %d failed: %v", attempt+1, err)
 	}
 
 	return nil, fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
-}
-
-func refreshLogSourceLabel(sourceLabel string) string {
-	sourceLabel = strings.TrimSpace(sourceLabel)
-	if sourceLabel == "" {
-		return ""
-	}
-	return fmt.Sprintf(" for %s", sourceLabel)
 }
 
 func isNonRetryableRefreshErr(err error) bool {

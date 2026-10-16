@@ -173,72 +173,9 @@ func TestNormalizeOpenAIToolResultsTextOnly(t *testing.T) {
 	if !gjson.GetBytes(got, "messages.0.content").IsArray() {
 		t.Fatal("assistant content array was unexpectedly changed")
 	}
-
-	// Images relayed into a non-tool message must not reach a text-only model
-	// either; the array shape is preserved with the image part replaced.
-	userContent := gjson.GetBytes(got, "messages.3.content")
-	if !userContent.IsArray() {
-		t.Fatalf("non-tool content type = %s, want array", userContent.Type)
+	if !gjson.GetBytes(got, "messages.3.content").IsArray() {
+		t.Fatal("non-tool content array was unexpectedly changed")
 	}
-	if len(userContent.Array()) != 1 {
-		t.Fatalf("non-tool content = %s, want single replacement part", userContent.Raw)
-	}
-	if part := userContent.Array()[0]; part.Get("type").String() != "text" || part.Get("text").String() != openAIToolResultImageOmittedText {
-		t.Fatalf("non-tool image part = %s, want omitted text marker", part.Raw)
-	}
-}
-
-func TestNormalizeOpenAIToolResultsTextOnlyNonToolContent(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantRaw string
-	}{
-		{
-			name:    "relay message drops image and keeps notice",
-			input:   `{"messages":[{"role":"user","content":[{"type":"text","text":"notice"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}`,
-			wantRaw: `[{"type":"text","text":"notice"},{"type":"text","text":"` + openAIToolResultImageOmittedText + `"}]`,
-		},
-		{
-			name:    "claude style image part",
-			input:   `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}]}`,
-			wantRaw: `[{"type":"text","text":"` + openAIToolResultImageOmittedText + `"}]`,
-		},
-		{
-			name:    "text-only array untouched",
-			input:   `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
-			wantRaw: `[{"type":"text","text":"hello"}]`,
-		},
-		{
-			name:    "plain string content untouched",
-			input:   `{"messages":[{"role":"tool","content":"plain"}]}`,
-			wantRaw: `"plain"`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizeOpenAIToolResultsTextOnly([]byte(tt.input))
-			content := gjson.GetBytes(got, "messages.0.content")
-			if content.Raw != tt.wantRaw {
-				t.Fatalf("content = %s, want %s", content.Raw, tt.wantRaw)
-			}
-			if images := countImageParts(content); images != 0 {
-				t.Fatalf("image parts = %d, want 0; content=%s", images, content.Raw)
-			}
-		})
-	}
-}
-
-func countImageParts(content gjson.Result) int {
-	count := 0
-	content.ForEach(func(_, part gjson.Result) bool {
-		if isOpenAIImageToolResultPart(part) {
-			count++
-		}
-		return true
-	})
-	return count
 }
 
 func TestNormalizeOpenAIToolResultsTextOnlyImageAndUnknownContent(t *testing.T) {

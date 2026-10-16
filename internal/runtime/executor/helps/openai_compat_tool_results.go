@@ -32,7 +32,7 @@ func ShouldNormalizeOpenAIToolResultsForModel(compat *config.OpenAICompatibility
 
 // NormalizeOpenAIToolResultsTextOnly converts tool message content to strings
 // and strips relayed tool result images for text-only compatibility models.
-// Images in other messages are also replaced with a short marker.
+// Text parts are preserved and image parts are replaced with a short marker.
 func NormalizeOpenAIToolResultsTextOnly(payload []byte) []byte {
 	messages := gjson.GetBytes(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
@@ -122,20 +122,10 @@ func NormalizeOpenAIToolResultsTextOnly(payload []byte) []byte {
 					}
 				}
 			}
-			if stripped, changed := replaceOpenAIImageParts(gjson.GetBytes(msgBytes, "content")); changed {
-				if updated, errSet := sjson.SetRawBytes(msgBytes, "content", stripped); errSet == nil {
-					msgBytes = updated
-				}
-			}
 			newMessages = append(newMessages, msgBytes)
 
 		default:
 			replacedPlaceholderInCurrentTurn = false
-			if stripped, changed := replaceOpenAIImageParts(gjson.GetBytes(msgBytes, "content")); changed {
-				if updated, errSet := sjson.SetRawBytes(msgBytes, "content", stripped); errSet == nil {
-					msgBytes = updated
-				}
-			}
 			newMessages = append(newMessages, msgBytes)
 		}
 	}
@@ -154,43 +144,6 @@ func NormalizeOpenAIToolResultsTextOnly(payload []byte) []byte {
 		return updated
 	}
 	return payload
-}
-
-// replaceOpenAIImageParts rewrites image parts in a content array as text
-// markers, preserving the array shape expected for non-tool messages.
-func replaceOpenAIImageParts(content gjson.Result) ([]byte, bool) {
-	if !content.IsArray() {
-		return nil, false
-	}
-
-	changed := false
-	parts := make([][]byte, 0, len(content.Array()))
-	content.ForEach(func(_, item gjson.Result) bool {
-		if isOpenAIImageToolResultPart(item) {
-			changed = true
-			marker := []byte(`{"type":"text","text":""}`)
-			marker, _ = sjson.SetBytes(marker, "text", openAIToolResultImageOmittedText)
-			parts = append(parts, marker)
-			return true
-		}
-		parts = append(parts, []byte(item.Raw))
-		return true
-	})
-	if !changed {
-		return nil, false
-	}
-	return []byte("[" + joinRawJSON(parts) + "]"), true
-}
-
-func joinRawJSON(parts [][]byte) string {
-	var builder strings.Builder
-	for index, part := range parts {
-		if index > 0 {
-			builder.WriteByte(',')
-		}
-		builder.Write(part)
-	}
-	return builder.String()
 }
 
 func openAICompatibilityModelExcludesImages(models []config.OpenAICompatibilityModel, model string) (bool, bool) {

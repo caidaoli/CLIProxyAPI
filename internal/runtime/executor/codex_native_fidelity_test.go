@@ -143,10 +143,7 @@ func TestCodexWebsocketLiteHeaderWithoutSessionHeaders(t *testing.T) {
 			cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: disableCloaking}}
 			headers := http.Header{}
 			headers.Set(codexResponsesLiteHeader, "true")
-			got, err := applyCodexWebsocketHeaders(context.Background(), nil, nil, "fixture-token", cfg, native, headers)
-			if err != nil {
-				t.Fatal(err)
-			}
+			got := applyCodexWebsocketHeaders(context.Background(), nil, nil, "fixture-token", cfg, native, headers)
 			want := ""
 			if native {
 				want = "true"

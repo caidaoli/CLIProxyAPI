@@ -9,7 +9,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.0
 - 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.31
-- Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · provider/protocol 修复
+- Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · uTLS protected-host 降级
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
 ## Hard Constraints
@@ -136,7 +136,7 @@ go test -count=1 ./internal/usage/                         # 禁用缓存
 
 - `config.yaml`（template: `config.example.yaml`）；`auths/*.json`；`.env`
 - 配置文件使用 v8 分组布局；旧版顶层字段仍可读取，显式迁移时映射到 `server`、`management`、`routing`、`oauth`、`observability` 等分组。
-- 主要 sections: `tls` `remote-management` `routing` `proxy-url` `request-retry` `quota-exceeded` `payload` `oauth-model-alias` `oauth-excluded-models` `oauth-request-scoped-errors` `ws-auth` `usage-persistence-enabled` `delete-unauthorized-auth` `auth-load-workers` `local-model` `claude-header-defaults` `codex.identity-confuse` `codex.strip-intermediary-updates` `cloak` `passthrough-headers` `streaming` `home` `save-cooldown-status`
+- 主要 sections: `tls` `remote-management` `routing` `proxy-url` `request-retry` `quota-exceeded` `payload` `oauth-model-alias` `oauth-excluded-models` `oauth-request-scoped-errors` `ws-auth` `usage-persistence-enabled` `delete-unauthorized-auth` `auth-load-workers` `local-model` `claude-header-defaults` `cloak` `passthrough-headers` `streaming` `home` `save-cooldown-status`
 - Token store env: 默认本地 file；`PGSTORE_*` / `GITSTORE_*` / `OBJECTSTORE_*`
 - `MANAGEMENT_STATIC_PATH`: 覆盖管理面板磁盘升级目录；默认使用 writable path 下的 `static/`，否则回退到 config 所在目录的 `static/`
 - `MANAGEMENT_PANEL_DEV_PATH`: 显式开发面板覆盖；设置后直接使用该文件并跳过自动更新
@@ -242,20 +242,15 @@ Modified:
 
 自动更新在开发覆盖、Home/cluster 模式、面板禁用或 `disable-auto-update` 时必须跳过。`MANAGEMENT_STATIC_PATH` 只控制磁盘升级目录，不得绕过 manifest/hash 校验。
 
-### 6. Provider, Protocol & Codex Enhancements
+### 6. Startup & Provider Policy
 
 Fork-only:
 - `cmd/server/config_bootstrap.go`（+tests）— Git-backed config 缺失时从模板初始化并持久化
 - `cmd/server/local_model.go`（+tests）— `local-model` CLI/config 优先级；启用后禁用远程模型刷新并使用内嵌 catalog，不是本地模型目录
-- `internal/codexapi/base_url.go`、`internal/runtime/executor/codex_base_url.go`（+tests）— Codex API base URL 解析
-- `internal/runtime/executor/responses_encrypted_retry.go`（+tests）— Responses API encrypted content 重试
-- `internal/runtime/executor/codex_prompt_patch.go` — `codex.strip-intermediary-updates` 控制删除 prompt 的 `## Intermediary updates` 段
-
-Modified:
-- `internal/config/config_types.go`、`internal/runtime/executor/codex_executor_{request,execute,stream}.go`、`codex_openai_images.go`、`codex_websockets_{request,execute,stream,duplex}.go`（+tests）— `codex.identity-confuse` 按凭证改写 Codex 会话标识并在响应中还原；合并上游时不得删除配置、HTTP/WebSocket 链路和测试。
 
 合并保护:
-- Antigravity / Claude / xAI 的 executor、`internal/auth/claude`、`internal/translator/antigravity/`、`internal/translator/codex/claude/` 不保留 fork 改动，合并时直接取上游；`sdk/api/handlers` 不按工具类型过滤 provider。
+- Provider 层不保留 fork 改动，合并时直接取上游：`internal/runtime/executor/`（含 Codex / Antigravity / Claude / xAI / Kimi / Devin / OpenAI-compat）、`internal/auth/`、`internal/translator/`、`internal/registry/models/`、`cmd/fetch_*_models`；`sdk/api/handlers` 不按工具类型过滤 provider。
+- 例外：`helps/utls_client.go`（第 7 节）及 `transport_decorator_test.go`；`helps/usage_helpers.go` 的 usage source 使用凭证文件名（第 1 节）；`translator/interactions/import_boundary_test.go` 的 v8 模块路径修正。
 - 上游 `api_tools_test.go` 的 `TestAPICallUsesXAITokenStorageWithoutRefresh`、`TestAPICallPrioritizesStorageAccessTokenOverMetadataIDToken` 在 fork 中删除：fork 管理端 api-call 经 executor 注入凭证，不支持仅存于 Storage 的 xAI token。合并时不要恢复。
 
 `internal/translator/` 仍是受保护路径。合并冲突必须按协议结构解析后验证，不得用字符串拼接或脆弱源码测试掩盖行为差异。

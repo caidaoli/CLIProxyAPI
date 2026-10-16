@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -74,62 +73,6 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 	if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 		t.Fatalf("payload = %s", string(resp.Payload))
-	}
-}
-
-func TestOpenAICompatExecutorEncryptedContentRetryPreservesDynamicHeaders(t *testing.T) {
-	validEncryptedContent := validCodexReasoningEncryptedContentForTest()
-	var mu sync.Mutex
-	requestHeaders := make([]http.Header, 0, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requestHeaders = append(requestHeaders, r.Header.Clone())
-		requestNumber := len(requestHeaders)
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		if requestNumber == 1 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(invalidEncryptedContentErrBody))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
-	}))
-	t.Cleanup(server.Close)
-
-	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
-	auth := &cliproxyauth.Auth{
-		Provider: "openai-compatibility",
-		Attributes: map[string]string{
-			"base_url":              server.URL + "/v1",
-			"api_key":               "test",
-			"header:X-Tenant-Route": "$X-Client-Tenant",
-		},
-	}
-	payload := []byte(`{"model":"gpt-5.1-codex-max","input":[{"type":"reasoning","id":"rs_bad","encrypted_content":"` + validEncryptedContent + `"},{"role":"user","content":"hi"}]}`)
-	_, errExecute := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gpt-5.1-codex-max",
-		Payload: payload,
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FromString("openai-response"),
-		Alt:          "responses/compact",
-		Headers: http.Header{
-			"X-Client-Tenant": []string{"tenant-123"},
-		},
-	})
-	if errExecute != nil {
-		t.Fatalf("Execute error: %v", errExecute)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(requestHeaders) != 2 {
-		t.Fatalf("request count = %d, want 2", len(requestHeaders))
-	}
-	for i, headers := range requestHeaders {
-		if got := headers.Get("X-Tenant-Route"); got != "tenant-123" {
-			t.Fatalf("request %d X-Tenant-Route = %q, want tenant-123", i+1, got)
-		}
 	}
 }
 

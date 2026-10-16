@@ -64,7 +64,7 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 	return rawJSON, headers, nil
 }
 
-func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, nativeRequest bool, clientHeaders ...http.Header) (http.Header, error) {
+func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, nativeRequest bool, clientHeaders ...http.Header) http.Header {
 	if headers == nil {
 		headers = http.Header{}
 	}
@@ -104,7 +104,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		}
 		req := (&http.Request{Header: headers}).WithContext(ctx)
 		util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
-		return headers, nil
+		return headers
 	}
 
 	isAPIKey := codexAuthUsesAPIKey(auth)
@@ -154,14 +154,12 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		headers.Set("Originator", codexOriginator)
 	}
 	if !isAPIKey {
-		accountID := ""
 		if auth != nil && auth.Metadata != nil {
-			if v, ok := auth.Metadata["account_id"].(string); ok {
-				accountID = strings.TrimSpace(v)
+			if accountID, ok := auth.Metadata["account_id"].(string); ok {
+				if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+					setHeaderCasePreserved(headers, "ChatGPT-Account-ID", trimmed)
+				}
 			}
-		}
-		if accountID != "" {
-			setHeaderCasePreserved(headers, "ChatGPT-Account-ID", accountID)
 		}
 	}
 
@@ -173,7 +171,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
 	applyCodexCloakingHeaders(headers, cfg, auth)
 
-	return headers, nil
+	return headers
 }
 
 func ensureCodexWebsocketSessionHeader(target http.Header, source http.Header, fallbackValue string) {

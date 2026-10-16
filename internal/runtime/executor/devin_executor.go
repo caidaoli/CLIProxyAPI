@@ -150,7 +150,7 @@ func (e *DevinExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		return auth, nil
 	}
 
-	httpClient := helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewDevinHTTPClient(ctx, e.cfg, auth, 30*time.Second)
 	authService := devinauth.NewDevinAuthService(httpClient)
 	if baseURL != "" {
 		authService.SetServerBaseURL(baseURL)

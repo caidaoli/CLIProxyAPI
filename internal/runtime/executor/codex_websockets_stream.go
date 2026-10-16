@@ -43,10 +43,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	preserveNativeOutput := prepared.preserveNativeOutput
 	originalPayload := prepared.originalPayload
 	clientBody := prepared.clientBody
-	upstreamBody := prepared.upstreamBody
 	wsURL := prepared.wsURL
 	wsHeaders := prepared.wsHeaders
-	identityState := prepared.identityState
 	replayScope := prepared.replayScope
 	optimizeMultiAgentV2 := prepared.optimizeMultiAgentV2
 	multiAgentV2Conflict := prepared.multiAgentV2Conflict
@@ -77,7 +75,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 	}
 
-	wsReqBody := frameCodexWebsocketRequestBody(upstreamBody)
+	wsReqBody := frameCodexWebsocketRequestBody(clientBody)
 	wsReqLog := helps.UpstreamRequestLog{
 		URL:       wsURL,
 		Method:    "WEBSOCKET",
@@ -195,7 +193,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			readCh = sess.activate(conn)
 			restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
-			wsReqBodyRetry := frameCodexWebsocketRequestBody(upstreamBody)
+			wsReqBodyRetry := frameCodexWebsocketRequestBody(clientBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 				URL:       wsURL,
 				Method:    "WEBSOCKET",
@@ -354,7 +352,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
@@ -469,16 +466,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 					payload = completedPayload
 				}
-				clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-				downstreamPayload := helps.EnsureResponsesUsageDetails(clientPayload)
+				downstreamPayload := helps.EnsureResponsesUsageDetails(payload)
 				currentChunks = [][]byte{downstreamPayload}
 			} else {
 				payload = normalizeCodexWebsocketCompletion(payload)
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 					payload = completedPayload
 				}
-				clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-				line := encodeCodexWebsocketAsSSE(clientPayload)
+				line := encodeCodexWebsocketAsSSE(payload)
 				currentChunks = helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
 			}
 
@@ -621,7 +616,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 			observeCodexTokenEvent(reporter, payload)
-			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
@@ -714,8 +708,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 					payload = completedPayload
 				}
-				clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-				downstreamPayload := helps.EnsureResponsesUsageDetails(clientPayload)
+				downstreamPayload := helps.EnsureResponsesUsageDetails(payload)
 				if !send(cliproxyexecutor.StreamChunk{Payload: downstreamPayload}) {
 					terminateReason = "context_done"
 					terminateErr = ctx.Err()
@@ -732,8 +725,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				payload = completedPayload
 			}
 			eventType = gjson.GetBytes(payload, "type").String()
-			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-			line := encodeCodexWebsocketAsSSE(clientPayload)
+			line := encodeCodexWebsocketAsSSE(payload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
 			for i := range chunks {
 				if !send(cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
@@ -760,10 +752,8 @@ type codexWebsocketPrepared struct {
 	preserveNativeOutput bool
 	originalPayload      []byte
 	clientBody           []byte
-	upstreamBody         []byte
 	wsURL                string
 	wsHeaders            http.Header
-	identityState        codexIdentityConfuseState
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
@@ -780,7 +770,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		if useSIWC {
 			baseURL = defaultOpenAISIWCBaseURL
 		} else {
-			baseURL = resolveCodexBaseURL(auth)
+			baseURL = "https://chatgpt.com/backend-api/codex"
 		}
 	}
 	var err error
@@ -808,7 +798,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	finalizePayload := helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	if !useSIWC {
-		body = applyCodexInstructionPatches(e.cfg, body, preserveNativeOutput)
+		body = normalizeCodexInstructions(body, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 		}
@@ -838,16 +828,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = finalizePayload(body)
-	clientBody := body
-	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
-	var errHeaders error
-	wsHeaders, errHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
-	if errHeaders != nil {
-		return nil, errHeaders
-	}
-	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
+	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
-	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
 	return &codexWebsocketPrepared{
 		from:                 from,
@@ -855,11 +838,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		to:                   to,
 		preserveNativeOutput: preserveNativeOutput,
 		originalPayload:      originalPayload,
-		clientBody:           clientBody,
-		upstreamBody:         upstreamBody,
+		clientBody:           body,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
-		identityState:        identityState,
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -15,15 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
-
-type proxyTransportCacheStore struct {
-	mu         sync.Mutex
-	transports map[string]*http.Transport
-}
-
-var proxyTransportCache = &proxyTransportCacheStore{
-	transports: make(map[string]*http.Transport),
-}
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use the execution-scoped request proxy if configured (highest priority)
@@ -51,7 +41,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
-		transport := CachedProxyTransport(proxyURL)
+		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
 			httpClient.Transport = transport
 			return httpClient
@@ -66,51 +56,6 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	return httpClient
-}
-
-// ProxyURLForHTTPClient resolves the proxy URL used by proxy-aware clients.
-func ProxyURLForHTTPClient(cfg *config.Config, auth *cliproxyauth.Auth) string {
-	// Priority 1: Use auth.ProxyURL if configured.
-	if auth != nil {
-		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
-			return proxyURL
-		}
-	}
-
-	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured.
-	if cfg != nil {
-		return strings.TrimSpace(cfg.ProxyURL)
-	}
-
-	return ""
-}
-
-// CachedProxyTransport returns a shared transport for the given proxy URL.
-func CachedProxyTransport(proxyURL string) *http.Transport {
-	proxyURL = strings.TrimSpace(proxyURL)
-	if proxyURL == "" {
-		return nil
-	}
-	return proxyTransportCache.transport(proxyURL)
-}
-
-func (c *proxyTransportCacheStore) transport(proxyURL string) *http.Transport {
-	if c == nil {
-		return buildProxyTransport(proxyURL)
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if transport := c.transports[proxyURL]; transport != nil {
-		return transport
-	}
-	transport := buildProxyTransport(proxyURL)
-	if transport == nil {
-		return nil
-	}
-	c.transports[proxyURL] = transport
-	return transport
 }
 
 var devinTransportCache = NewTransportCache[string](DefaultTransportCacheCapacity)

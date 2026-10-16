@@ -157,11 +157,7 @@ func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool)
 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
 		return statusErr{}, nil, false
 	}
-	statusCode := http.StatusBadRequest
-	if codexTerminalErrorIsUsageLimitReached(body) {
-		statusCode = http.StatusTooManyRequests
-	}
-	return newCodexStatusErrWithCooling(statusCode, body, modelLevelCooling), body, true
+	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
 }
 
 func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
@@ -241,10 +237,6 @@ func codexTerminalStreamErrShouldHandle(body []byte) bool {
 	}
 	code, _, ok := codexStatusErrorClassification(http.StatusBadRequest, body)
 	return ok && code == "thinking_signature_invalid"
-}
-
-func codexTerminalErrorIsUsageLimitReached(body []byte) bool {
-	return strings.TrimSpace(gjson.GetBytes(body, "error.type").String()) == "usage_limit_reached"
 }
 
 func codexTerminalErrorBody(eventData []byte, path string) []byte {

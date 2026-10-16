@@ -336,17 +336,11 @@ func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	}
 }
 
-func TestParseClaudeUsageKeepsCacheCreationSeparateFromCacheRead(t *testing.T) {
+func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_creation_input_tokens":19514}}`)
 	detail := ParseClaudeUsage(data)
-	if detail.CachedTokens != 0 {
-		t.Fatalf("cached tokens = %d, want 0", detail.CachedTokens)
-	}
-	if detail.CacheReadTokens != 0 {
-		t.Fatalf("cache read tokens = %d, want 0", detail.CacheReadTokens)
-	}
-	if detail.CacheCreationTokens != 19514 {
-		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 19514)
+	if detail.CachedTokens != 19514 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 19514)
 	}
 	if detail.TotalTokens != 22852 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22852)

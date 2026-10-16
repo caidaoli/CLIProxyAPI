@@ -338,8 +338,7 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 				}
 			}
 		} else {
-			outerClientID, _ := auth.Metadata["client_id"].(string)
-			td, errOuter := svc.RefreshTokensWithRetryAndClientID(ctx, outerRefreshToken, strings.TrimSpace(outerClientID), codexRefreshSourceLabel(auth), 3)
+			td, errOuter := svc.RefreshTokensWithRetry(ctx, outerRefreshToken, 3)
 			if errOuter != nil {
 				outerErr = errOuter
 			} else if td != nil {
@@ -538,24 +537,6 @@ func resolveCodexKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config.
 		}
 	}
 	return nil
-}
-
-func codexRefreshSourceLabel(auth *cliproxyauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if auth.Metadata != nil {
-		if email, ok := auth.Metadata["email"].(string); ok {
-			email = strings.TrimSpace(email)
-			if email != "" {
-				return email
-			}
-		}
-	}
-	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		return filepath.Base(fileName)
-	}
-	return strings.TrimSpace(auth.ID)
 }
 
 func (e *CodexExecutor) resolveCodexModelIsCompat(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, baseModel string) bool {

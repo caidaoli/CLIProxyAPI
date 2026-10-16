@@ -347,7 +347,6 @@ routing: {strategy: fill-first, session-affinity: true}
 oauth:
   providers:
     codex:
-      identity-confuse: true
       disable-codex-cloaking: true
       retired-setting: {mode: old}
 `)
@@ -370,7 +369,7 @@ oauth:
 		t.Fatalf("unknown nested field was not preserved as a comment: %s", migrated)
 	}
 	cfg, err := ParseConfigBytes(migrated)
-	if err != nil || cfg.Routing.Strategy != "fill-first" || !cfg.Routing.SessionAffinity || !cfg.Codex.IdentityConfuse || !cfg.Codex.DisableCodexCloaking {
+	if err != nil || cfg.Routing.Strategy != "fill-first" || !cfg.Routing.SessionAffinity || !cfg.Codex.DisableCodexCloaking {
 		t.Fatalf("migration changed known settings: cfg=%+v error=%v", cfg, err)
 	}
 	remigrated, _, err := NormalizeConfigLayout(migrated, true)
@@ -626,7 +625,7 @@ func TestV8MigrationPreservesEmptyLegacyContainers(t *testing.T) {
 func TestV8EmptyLegacyContainersKeepNewValues(t *testing.T) {
 	raw := []byte(`port: 8317
 tls: null
-codex: {identity-confuse: true, disable-codex-cloaking: true, live-media-relay: {}}
+codex: {disable-codex-cloaking: true, live-media-relay: {}}
 server: {tls: {enable: true, cert: server.crt, key: server.key}}
 oauth: {providers: {codex: {live-media-relay: {max-sessions: 12}}}}
 `)
@@ -639,7 +638,7 @@ oauth: {providers: {codex: {live-media-relay: {max-sessions: 12}}}}
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !cfg.TLS.Enable || cfg.TLS.Cert != "server.crt" || cfg.TLS.Key != "server.key" || cfg.Codex.LiveMediaRelay.MaxSessions != 12 || !cfg.Codex.IdentityConfuse || !cfg.Codex.DisableCodexCloaking {
+		if !cfg.TLS.Enable || cfg.TLS.Cert != "server.crt" || cfg.TLS.Key != "server.key" || cfg.Codex.LiveMediaRelay.MaxSessions != 12 || !cfg.Codex.DisableCodexCloaking {
 			t.Fatal("empty legacy block overwrote new values or a non-empty sibling")
 		}
 		var doc yaml.Node
@@ -649,7 +648,7 @@ oauth: {providers: {codex: {live-media-relay: {max-sessions: 12}}}}
 		if yamlPath(doc.Content[0], "tls") != nil || yamlPath(doc.Content[0], "codex.live-media-relay") != nil {
 			t.Fatal("conflicting empty legacy blocks were not removed")
 		}
-		if !migrate && (yamlPath(doc.Content[0], "codex.identity-confuse") == nil || yamlPath(doc.Content[0], "codex.disable-codex-cloaking") == nil) {
+		if !migrate && yamlPath(doc.Content[0], "codex.disable-codex-cloaking") == nil {
 			t.Fatal("conflict cleanup migrated a non-conflicting legacy sibling")
 		}
 	}

@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
@@ -216,12 +217,15 @@ func main() {
 }
 
 func fetchRawDevinModels(ctx context.Context, cfg *config.Config, auth *coreauth.Auth, apiKey string) ([]rawDevinModel, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	f1Bytes := helps.BuildDevinClientMetadataBytes(apiKey, "", "")
 	var reqBody []byte
 	reqBody = protowire.AppendTag(reqBody, 1, protowire.BytesType)
 	reqBody = protowire.AppendBytes(reqBody, f1Bytes)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, devinGetCliModelConfigsURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodPost, devinGetCliModelConfigsURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -231,7 +235,7 @@ func fetchRawDevinModels(ctx context.Context, cfg *config.Config, auth *coreauth
 	req.Header.Set("Connect-Protocol-Version", "1")
 	req.Header.Set("User-Agent", devinDefaultUserAgent)
 
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 0)
+	httpClient := helps.NewProxyAwareHTTPClient(fetchCtx, cfg, auth, 30*time.Second)
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}

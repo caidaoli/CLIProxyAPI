@@ -198,10 +198,7 @@ func TestCodexPerCredentialDisableCloaking_WebSocket_ExplicitTrue(t *testing.T) 
 		},
 	}
 
-	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg, true)
-	if err != nil {
-		t.Fatalf("applyCodexWebsocketHeaders failed: %v", err)
-	}
+	headers := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg, true)
 
 	if got := headers.Get("User-Agent"); got != "CustomWSAgent/1.0" {
 		t.Errorf("WebSocket User-Agent = %q, want %q", got, "CustomWSAgent/1.0")
@@ -229,10 +226,7 @@ func TestCodexPerCredentialDisableCloaking_WebSocket_ExplicitFalseOverridesGloba
 		},
 	}
 
-	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg, true)
-	if err != nil {
-		t.Fatalf("applyCodexWebsocketHeaders failed: %v", err)
-	}
+	headers := applyCodexWebsocketHeaders(context.Background(), nil, auth, "test-token", cfg, true)
 
 	if got := headers.Get("User-Agent"); got != codexUserAgent {
 		t.Errorf("WebSocket User-Agent = %q, want %q", got, codexUserAgent)

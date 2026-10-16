@@ -1065,13 +1065,6 @@ oauth:
 
     # Codex provider behavior.
     codex:
-      # When true, and routing.strategy is fill-first or routing.session-affinity is true,
-      # remap Codex prompt_cache_key and installation identity per selected auth.
-      # Some superstitious users believe request tracking identifiers can be used
-      # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
-      identity-confuse: false
-      # Strip Codex Desktop's local intermediary-update instructions before forwarding.
-      strip-intermediary-updates: false
       # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
       # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
       live-media-relay:

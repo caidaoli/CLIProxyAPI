@@ -15,41 +15,17 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// countImagePartsInBody counts image content parts anywhere in the request body,
-// regardless of which message the translator placed them in.
-func countImagePartsInBody(body []byte) int {
-	count := 0
-	gjson.GetBytes(body, "messages").ForEach(func(_, message gjson.Result) bool {
-		message.Get("content").ForEach(func(_, part gjson.Result) bool {
-			switch strings.ToLower(strings.TrimSpace(part.Get("type").String())) {
-			case "image", "image_url", "input_image":
-				count++
-			default:
-				if part.Get("image_url").Exists() || part.Get("input_image").Exists() {
-					count++
-				}
-			}
-			return true
-		})
-		return true
-	})
-	return count
-}
-
 func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
-	// The upstream translator always flattens Claude tool_result content into a
-	// string and relays any images into a following user message. The fork's
-	// input_modalities feature then decides whether those relayed images survive.
 	tests := []struct {
 		name            string
 		stream          bool
 		inputModalities []string
-		wantImages      bool
+		wantString      bool
 	}{
-		{name: "non-stream text-only", stream: false, inputModalities: []string{"text"}, wantImages: false},
-		{name: "stream text-only", stream: true, inputModalities: []string{"text"}, wantImages: false},
-		{name: "non-stream multimodal", stream: false, inputModalities: []string{"text", "image"}, wantImages: true},
-		{name: "non-stream unspecified", stream: false, inputModalities: nil, wantImages: true},
+		{name: "non-stream text-only", stream: false, inputModalities: []string{"text"}, wantString: true},
+		{name: "stream text-only", stream: true, inputModalities: []string{"text"}, wantString: true},
+		{name: "non-stream multimodal", stream: false, inputModalities: []string{"text", "image"}, wantString: false},
+		{name: "non-stream unspecified", stream: false, inputModalities: nil, wantString: false},
 	}
 
 	for _, tt := range tests {
@@ -108,34 +84,93 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 				t.Fatalf("Execute error: %v", errExecute)
 			}
 
-			// Upstream contract: tool_result text is flattened into a string and
-			// the image is relayed out of the tool message.
 			toolContent := gjson.GetBytes(gotBody, "messages.1.content")
-			if toolContent.Type != gjson.String {
-				t.Fatalf("tool content type = %s, want string; body=%s", toolContent.Type, string(gotBody))
+			if tt.wantString {
+				if toolContent.Type != gjson.String {
+					t.Fatalf("tool content type = %s, want string; body=%s", toolContent.Type, string(gotBody))
+				}
+				want := "image inspected\n\n[image omitted: unsupported by upstream]"
+				if toolContent.String() != want {
+					t.Fatalf("tool content = %q, want %q", toolContent.String(), want)
+				}
+				if strings.Contains(string(gotBody), "image_url") {
+					t.Fatalf("text-only model still received an image_url part:\n%s", string(gotBody))
+				}
+			} else {
+				if toolContent.Type != gjson.String {
+					t.Fatalf("tool content type = %s, want string; body=%s", toolContent.Type, string(gotBody))
+				}
+				if toolContent.String() != "image inspected" {
+					t.Fatalf("tool content = %q, want %q", toolContent.String(), "image inspected")
+				}
+				if !strings.Contains(string(gotBody), "image_url") {
+					t.Fatalf("multimodal model did not receive relayed image_url part:\n%s", string(gotBody))
+				}
 			}
-			wantText := "image inspected"
-			if !tt.wantImages {
-				wantText += "\n\n[image omitted: unsupported by upstream]"
+		})
+	}
+}
+
+func TestTextOnlyModelDoesNotReceiveImageURL(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: [DONE]\n\n"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer server.Close()
+
+			exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+				OpenAICompatibility: []config.OpenAICompatibility{{
+					Name: "compat",
+					Models: []config.OpenAICompatibilityModel{{
+						Name:            "mapped-model",
+						Alias:           "claude-client",
+						InputModalities: []string{"text"},
+					}},
+				}},
+			})
+			auth := &cliproxyauth.Auth{
+				Provider: "openai-compatibility",
+				Attributes: map[string]string{
+					"base_url": server.URL + "/v1", "api_key": "test",
+					"compat_name": "compat", "provider_key": "compat",
+				},
 			}
-			if toolContent.String() != wantText {
-				t.Fatalf("tool content = %q, want %q", toolContent.String(), wantText)
+			payload := []byte(`{"model":"claude-client","max_tokens":64,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"inspect_image","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"image inspected"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}]}]}`)
+
+			opts := cliproxyexecutor.Options{
+				SourceFormat:   sdktranslator.FormatClaude,
+				ResponseFormat: sdktranslator.FormatOpenAI,
+				Stream:         stream,
+			}
+			req := cliproxyexecutor.Request{Model: "mapped-model", Payload: payload}
+
+			if stream {
+				result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream: %v", err)
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("chunk error: %v", chunk.Err)
+					}
+				}
+			} else {
+				if _, err := exec.Execute(context.Background(), auth, req, opts); err != nil {
+					t.Fatalf("Execute: %v", err)
+				}
 			}
 
-			// Fork feature: a text-only model must not receive the relayed image,
-			// while models that accept image input keep it.
-			imageParts := countImagePartsInBody(gotBody)
-			if tt.wantImages {
-				if imageParts == 0 {
-					t.Fatalf("body has no image part, want relayed image; body=%s", string(gotBody))
-				}
-				return
-			}
-			if imageParts != 0 {
-				t.Fatalf("body has %d image part(s) for a text-only model; body=%s", imageParts, string(gotBody))
-			}
-			if !strings.Contains(string(gotBody), "[image omitted: unsupported by upstream]") {
-				t.Fatalf("expected image omission marker; body=%s", string(gotBody))
+			if strings.Contains(string(gotBody), "image_url") {
+				t.Fatalf("text-only model still received an image_url part:\n%s", string(gotBody))
 			}
 		})
 	}

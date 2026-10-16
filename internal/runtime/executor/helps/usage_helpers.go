@@ -1205,6 +1205,9 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
 	}
+	if detail.CachedTokens == 0 {
+		detail.CachedTokens = detail.CacheCreationTokens
+	}
 	// raw output_tokens already includes thinking; cache fields are independent
 	// from input_tokens in the Messages API.
 	detail.TotalTokens = detail.InputTokens + rawOutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
