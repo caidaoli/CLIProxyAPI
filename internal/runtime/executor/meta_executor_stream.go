@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -86,6 +87,7 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		var terminalDelivered bool
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			lines, errBridge := prepared.applyPatch.Stream(translatedLine)
 			if errBridge != nil {
@@ -150,6 +152,9 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
 				return
 			}
+			if eventType == "response.completed" || eventType == "response.incomplete" {
+				terminalDelivered = true
+			}
 		}
 		finishEvents, errFinish := prepared.applyPatch.FinishStream()
 		if errFinish != nil {
@@ -174,6 +179,9 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if terminalDelivered && errors.Is(errScan, context.Canceled) {
+				return
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {

@@ -426,6 +426,11 @@ upstream:
     # Default false keeps the translation and catalog behavior that predate tool_search support.
     tool-search: false
 
+    # Days to retain the cloaked currentDate pin per session, so an idle gap or a credential
+    # switch cannot re-anchor the date and invalidate earlier thinking signatures and the
+    # prompt cache. Default 7; an explicit 0 keeps the continuity-scoped pin (1h lifetime).
+    session-date-pin-days: 7
+
     # When true, disable Claude request cloaking on OAuth and API-key CLI profiles (the Claude Code CLI disguise and
     # system prompt replacement), so the original system prompt is passed through to Claude as-is.
     # Credential attributes and explicit per-key cloak modes override this shared default.
