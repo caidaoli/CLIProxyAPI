@@ -373,8 +373,8 @@ func TestManagerAutoRefreshKeepsXAIInvalidGrantWithUpstreamLifecycle(t *testing.
 	if !ok || retained == nil {
 		t.Fatal("expected invalid auth to remain registered")
 	}
-	if retained.Unavailable || retained.Status == StatusError {
-		t.Fatalf("retained auth state = unavailable:%v status:%s, want upstream non-terminal backoff", retained.Unavailable, retained.Status)
+	if !retained.Unavailable || retained.Status != StatusError || retained.StatusMessage != "invalid grant (retrying)" {
+		t.Fatalf("retained auth state = unavailable:%v status:%s message:%q, want upstream invalid grant backoff", retained.Unavailable, retained.Status, retained.StatusMessage)
 	}
 	if retained.LastError.Code != "" || retained.LastError.HTTPStatus != 0 {
 		t.Fatalf("LastError = %#v, want unclassified upstream refresh error", retained.LastError)
@@ -384,6 +384,61 @@ func TestManagerAutoRefreshKeepsXAIInvalidGrantWithUpstreamLifecycle(t *testing.
 	}
 	if got := store.deleted(); len(got) != 0 {
 		t.Fatalf("deleted auths = %v, want none", got)
+	}
+}
+
+func TestManagerRefreshXAIOAuthFailureFollowsUpstreamLifecycle(t *testing.T) {
+	SetDeleteUnauthorizedAuth(true)
+	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })
+
+	tests := []struct {
+		name              string
+		err               error
+		failedAccessToken string
+		wantMessage       string
+		wantScheduled     bool
+	}{
+		{
+			name:          "expired token transient failure",
+			err:           &refreshOAuthError{status: http.StatusInternalServerError, message: "upstream unavailable"},
+			wantMessage:   "token expired",
+			wantScheduled: true,
+		},
+		{
+			name:              "rejected token invalid grant",
+			err:               fmt.Errorf(`xai token request failed with status 400: {"error":"invalid_grant"}`),
+			failedAccessToken: "expired-access-token",
+			wantMessage:       "unauthorized (refresh token invalid)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &deleteTrackingStore{}
+			manager := NewManager(store, nil, nil)
+			manager.RegisterExecutor(&oauthRefreshFailureExecutor{
+				schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "xai"},
+				err:                           tt.err,
+			})
+			registerExpiredRefreshAuth(t, manager, "xai-upstream", "xai")
+
+			if _, errRefresh := manager.refreshAuthForRequest(context.Background(), "xai-upstream", tt.failedAccessToken); errRefresh == nil {
+				t.Fatal("refreshAuthForRequest() error = nil, want refresh failure")
+			}
+
+			updated, ok := manager.GetByID("xai-upstream")
+			if !ok {
+				t.Fatal("expected xai auth to remain registered")
+			}
+			if !updated.Unavailable || updated.Status != StatusError || updated.StatusMessage != tt.wantMessage {
+				t.Fatalf("auth state = unavailable:%v status:%s message:%q, want unavailable error %q", updated.Unavailable, updated.Status, updated.StatusMessage, tt.wantMessage)
+			}
+			if _, scheduled := nextRefreshCheckAt(time.Now(), updated, time.Second); scheduled != tt.wantScheduled {
+				t.Fatalf("refresh scheduled = %v, want %v", scheduled, tt.wantScheduled)
+			}
+			if got := store.deleted(); len(got) != 0 {
+				t.Fatalf("deleted auths = %v, want none", got)
+			}
+		})
 	}
 }
 

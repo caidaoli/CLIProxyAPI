@@ -396,11 +396,11 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 	if auth == nil {
 		return time.Time{}, false
 	}
+	terminal := hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now)
 	if usesUpstreamXAIOAuthLifecycle(auth) {
-		if hasUnauthorizedAuthFailure(auth) {
-			return time.Time{}, false
-		}
-	} else if hasDisabledInvalidGrantFailure(auth) || (hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now)) {
+		terminal = hasUnauthorizedAuthFailure(auth)
+	}
+	if terminal || hasDisabledInvalidGrantFailure(auth) {
 		return time.Time{}, false
 	}
 

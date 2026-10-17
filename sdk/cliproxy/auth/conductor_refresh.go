@@ -856,6 +856,8 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
+	// xAI OAuth keeps the upstream refresh lifecycle: fork-only policies
+	// (missing-token rejection, terminal classification, deletion) are skipped.
 	useUpstreamXAI := usesUpstreamXAIOAuthLifecycle(auth)
 	if registrationEpoch != 0 && auth.RegistrationEpoch != registrationEpoch {
 		return nil, errors.New("auth registration changed before refresh")
@@ -912,21 +914,21 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	if err != nil {
-		terminal := isPermanentRefreshAuthError(err)
-		if useUpstreamXAI {
-			terminal = isUpstreamUnauthorizedError(err)
-		}
+		terminal := !useUpstreamXAI && isPermanentRefreshAuthError(err)
 		// A refresh failure must not disable or delete a credential while its
 		// current access token is still valid. The request path can continue to
 		// use that token, and any existing cooldown/unavailable state belongs to
 		// the credential rather than the failed refresh attempt.
-		deleteTerminal := terminal && !auth.HasValidAccessToken(now) && deleteUnauthorizedAuth.Load() && !useUpstreamXAI
+		deleteTerminal := terminal && !auth.HasValidAccessToken(now) && deleteUnauthorizedAuth.Load()
 		var unlockLifecycle func()
 		if deleteTerminal {
 			unlockLifecycle = m.lockAuthLifecycle(id)
 			defer unlockLifecycle()
 		}
 		unauthorized := isUnauthorizedError(err)
+		if useUpstreamXAI {
+			unauthorized = isUpstreamUnauthorizedError(err)
+		}
 		invalidGrant := isInvalidGrantError(err)
 		shouldDelete := false
 		shouldReschedule := false
@@ -951,7 +953,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 				current.Status = StatusError
 				current.NextRefreshAfter = time.Time{}
 				current.NextRetryAfter = time.Time{}
-				if isUnauthorizedError(err) || isInvalidGrantError(err) {
+				if unauthorized || invalidGrant {
 					current.LastError = &Error{Code: "unauthorized", Message: err.Error(), HTTPStatus: http.StatusUnauthorized}
 					current.StatusMessage = "unauthorized (refresh token invalid)"
 				}
@@ -998,7 +1000,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 						current.StatusMessage = "disabled"
 					}
 					shouldReschedule = true
-				case !useUpstreamXAI && accessTokenRejected && invalidGrant:
+				case accessTokenRejected && invalidGrant:
 					// Neither token can recover without a new login. Stop selecting the
 					// credential until its tokens change instead of retrying it after
 					// every cooldown and returning the same 401 to clients.
@@ -1014,18 +1016,8 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 					current.NextRefreshAfter = time.Time{}
 					current.Unavailable = true
 					current.Status = StatusError
-					if useUpstreamXAI {
-						current.StatusMessage = "unauthorized"
-						shouldReschedule = true
-					} else {
-						current.StatusMessage = current.LastError.Code
-						shouldUnschedule = true
-					}
-				case useUpstreamXAI:
-					// XAI's OAuth lifecycle keeps non-401 refresh failures on the
-					// schedule, even when the previous token has expired.
-					current.NextRefreshAfter = now.Add(refreshFailureBackoff)
-					shouldReschedule = true
+					current.StatusMessage = current.LastError.Code
+					shouldUnschedule = true
 				case !hasValidAccessToken || accessTokenRejected:
 					current.Unavailable = true
 					current.Status = StatusError
