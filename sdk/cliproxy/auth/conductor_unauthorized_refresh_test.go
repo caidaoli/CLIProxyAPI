@@ -607,6 +607,40 @@ func TestManager_ForceRefreshAuth_FailurePreservesTerminalUnauthorizedState(t *t
 	}
 }
 
+func TestManager_RefreshRejectedToken_UnauthorizedClearsRetryCooldown(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&oauthRefreshFailureExecutor{
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "refresh-test"},
+		err:                           &refreshOAuthError{status: http.StatusUnauthorized, message: "unauthorized"},
+	})
+	auth := &Auth{
+		ID:             "rejected-token",
+		Provider:       "refresh-test",
+		NextRetryAfter: time.Now().Add(time.Hour),
+		Metadata: map[string]any{
+			"access_token":  "rejected-access-token",
+			"refresh_token": "refresh-token",
+			"expired":       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	if _, errRefresh := manager.refreshAuthForRequest(context.Background(), auth.ID, "rejected-access-token"); errRefresh == nil {
+		t.Fatal("refreshAuthForRequest() error = nil, want unauthorized refresh failure")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("auth missing after refresh failure")
+	}
+	if !hasUnauthorizedAuthFailure(updated) {
+		t.Fatalf("expected terminal unauthorized state, got unavailable=%v status=%s next_refresh=%v next_retry=%v last_error=%+v",
+			updated.Unavailable, updated.Status, updated.NextRefreshAfter, updated.NextRetryAfter, updated.LastError)
+	}
+}
+
 func TestManager_Execute_UnauthorizedRefreshFailureFallsBackToNextAuth(t *testing.T) {
 	m, executor, primary, backup, model := newUnauthorizedRefreshFixture(t, true)
 
