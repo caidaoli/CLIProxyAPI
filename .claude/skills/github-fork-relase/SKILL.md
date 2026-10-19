@@ -51,14 +51,15 @@ git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'%H%n%s%n%b%n---'
 
 | 优先级 | 条件 | 版本 |
 |--------|------|------|
-| 1 | `type!:`、`BREAKING CHANGE:`，或明确的不兼容公共 API、协议、配置、CLI、持久化格式变更 | major |
+| 1 | 用户明确要求升级大版本，或待发布提交包含明确的 breaking 标记：标题 `type!:` / `type(scope)!:`，或正文 footer `BREAKING CHANGE:` / `BREAKING-CHANGE:` | major |
 | 2 | `feat:`，或提交语义明确表示新增、引入、支持、启用对外能力 | minor |
 | 3 | 修复、性能、重构、文档、测试、依赖、构建、CI、内部实现，以及无法识别的提交 | patch |
 
 判断约束：
 
-- 扫描全部待发布提交，取最高等级：`major > minor > patch`
-- 只有明确影响外部兼容性的变更才能推断为 `major`；删除内部代码或普通重构仍为 `patch`
+- 用户明确指定版本或要求维持当前大版本时，以用户要求为准。
+- 扫描全部待发布的非 Merge 提交，按上述条件取最高等级：`major > minor > patch`。breaking 标记必须是提交自身的声明，引用示例或否定说明不算。
+- 禁止根据 diff 或提交语义推断 `major`。上游合并、输入校验收紧、错误处理、行为修复及配置优先级调整，没有明确 breaking 标记时均不触发大版本升级；实际兼容性影响写入发布说明。
 - 只有新增对外能力才能推断为 `minor`；新增测试、文档、内部 helper 仍为 `patch`
 - 不符合 Conventional Commits 且语义不明确时，默认 `patch`，不询问用户
 
