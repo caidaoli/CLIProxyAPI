@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 )
 
 // Run with -race to check that scheduler snapshots never read published auths unlocked.
@@ -72,4 +73,62 @@ func TestPublishedAuthSnapshotRace(t *testing.T) {
 			wg.Wait()
 		})
 	}
+}
+
+func TestManagerModifyWaitsForConditionalRemoval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := WithSkipPersist(context.Background())
+		manager := NewManager(nil, nil, nil)
+		auth, errRegister := manager.Register(ctx, &Auth{ID: "modify-removal", Provider: "audit", Status: StatusActive})
+		if errRegister != nil {
+			t.Fatal(errRegister)
+		}
+		deletionEntered := make(chan struct{})
+		allowDeletion := make(chan struct{})
+		removed := make(chan error, 1)
+		go func() {
+			didRemove, errRemove := manager.RemoveIf(ctx, auth.ID, nil, func(*Auth) error {
+				close(deletionEntered)
+				<-allowDeletion
+				return nil
+			})
+			if errRemove == nil && !didRemove {
+				errRemove = fmt.Errorf("credential was not removed")
+			}
+			removed <- errRemove
+		}()
+		<-deletionEntered
+		modified := make(chan error, 1)
+		editCalled := false
+		go func() {
+			updated, didModify, errModify := manager.Modify(ctx, auth.ID, auth.RegistrationEpoch, func(current *Auth) error {
+				editCalled = true
+				current.Label = "modified"
+				return nil
+			})
+			if errModify == nil && (updated != nil || didModify) {
+				errModify = fmt.Errorf("modified credential during removal")
+			}
+			modified <- errModify
+		}()
+		synctest.Wait()
+		select {
+		case <-modified:
+			t.Error("Modify completed before the pending removal")
+		default:
+		}
+		if editCalled {
+			t.Error("Modify edited credential during removal")
+		}
+		close(allowDeletion)
+		if errRemove := <-removed; errRemove != nil {
+			t.Fatal(errRemove)
+		}
+		if errModify := <-modified; errModify != nil {
+			t.Fatal(errModify)
+		}
+		if _, ok := manager.GetByID(auth.ID); ok {
+			t.Fatal("Modify resurrected a removed credential")
+		}
+	})
 }

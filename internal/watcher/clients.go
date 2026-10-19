@@ -33,30 +33,36 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		return
 	}
 
+	needsFullScan := w.fileAuthLoadingIsEnabled() &&
+		(rescanAuth || len(affectedOAuthProviders) > 0 || forceAuthRefresh || w.AuthLoadStatus().State == AuthLoadStateLoading)
 	if len(affectedOAuthProviders) > 0 {
 		w.clientsMutex.Lock()
 		if w.currentAuths != nil {
 			filtered := make(map[string]*coreauth.Auth, len(w.currentAuths))
+			pendingReload := make(map[string]*coreauth.Auth)
 			for id, auth := range w.currentAuths {
 				if auth == nil {
 					continue
 				}
 				provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 				if _, match := matchProvider(provider, affectedOAuthProviders); match {
-					continue
+					pendingReload[id] = auth
+					if !needsFullScan || auth.Attributes[coreauth.AttributePath] == "" {
+						continue
+					}
 				}
 				filtered[id] = auth
 			}
 			w.currentAuths = filtered
+			w.pendingProviderReloadAuths = pendingReload
 			log.Debugf("applying oauth-excluded-models to providers %v", affectedOAuthProviders)
 		} else {
 			w.currentAuths = nil
+			w.pendingProviderReloadAuths = nil
 		}
 		w.clientsMutex.Unlock()
 	}
 
-	needsFullScan := w.fileAuthLoadingIsEnabled() &&
-		(rescanAuth || len(affectedOAuthProviders) > 0 || forceAuthRefresh || w.AuthLoadStatus().State == AuthLoadStateLoading)
 	if needsFullScan {
 		loadCtx := w.authLoadContext()
 		if w.stopped.Load() || loadCtx.Err() != nil {
@@ -256,15 +262,21 @@ func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*corea
 			continue
 		}
 		w.currentAuths[id] = newAuth.Clone()
-		if !authEqual(existing, newAuth) {
+		if !authEqual(existing, newAuth) || w.pendingProviderReloadAuths[id] != nil {
 			updates = append(updates, AuthUpdate{Action: AuthUpdateActionModify, ID: id, Auth: newAuth.Clone(), ReplaceMaterial: true})
 		}
+	}
+	for id := range newByID {
+		delete(w.pendingProviderReloadAuths, id)
 	}
 	for id := range oldByID {
 		if _, stillExists := newByID[id]; stillExists {
 			continue
 		}
 		delete(w.currentAuths, id)
+		if w.pendingProviderReloadAuths != nil {
+			delete(w.pendingProviderReloadAuths, id)
+		}
 		updates = append(updates, AuthUpdate{Action: AuthUpdateActionDelete, ID: id})
 	}
 	w.stampAuthUpdatesLocked(updates)

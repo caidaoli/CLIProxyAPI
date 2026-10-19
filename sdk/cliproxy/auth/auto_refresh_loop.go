@@ -396,7 +396,7 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 	if auth == nil {
 		return time.Time{}, false
 	}
-	terminal := hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now)
+	terminal := hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now) && auth.NextRefreshAfter.IsZero()
 	if usesUpstreamXAIOAuthLifecycle(auth) {
 		terminal = hasUnauthorizedAuthFailure(auth)
 	}
@@ -445,6 +445,9 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 			interval = refreshCheckInterval
 		}
 		return now.Add(interval), true
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") && auth.RejectedAccessToken != "" && auth.RejectedAccessToken == authAccessToken(auth) && authHasRefreshCredential(auth) {
+		return now, true
 	}
 
 	lastRefresh := auth.LastRefreshedAt

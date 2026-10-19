@@ -968,6 +968,46 @@ func TestRegisterExecutorsDoesNotUnregisterStaleProviderOwnedExternally(t *testi
 	}
 }
 
+func TestRegisterExecutorsCommitsManagerChangesOutsideHostLock(t *testing.T) {
+	manager := newFakeExecutorManager()
+	exec := &fakeExecutor{identifier: "fallback-provider"}
+	host := newHostWithRecords(capabilityRecord{
+		id: "alpha",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			Executor: exec,
+		}},
+	})
+	host.modelProviders["alpha"] = "provider-a"
+
+	assertUnlocked := func(op string) {
+		t.Helper()
+		if !host.mu.TryLock() {
+			t.Fatalf("%s called while host.mu is held", op)
+		}
+		host.mu.Unlock()
+	}
+	manager.onExecutor = func(string) {
+		assertUnlocked("manager.Executor")
+	}
+	manager.onRegister = func(coreauth.ProviderExecutor) {
+		assertUnlocked("manager.RegisterExecutor")
+	}
+	manager.onUnregister = func(string) {
+		assertUnlocked("manager.UnregisterExecutor")
+	}
+
+	host.RegisterExecutors(manager, nil)
+	host.modelProviders["alpha"] = "provider-b"
+	host.RegisterExecutors(manager, nil)
+
+	if manager.registerCalls != 2 {
+		t.Fatalf("RegisterExecutor calls = %d, want 2", manager.registerCalls)
+	}
+	if len(manager.unregisters) != 1 || manager.unregisters[0] != "provider-a" {
+		t.Fatalf("unregistered providers = %#v, want [provider-a]", manager.unregisters)
+	}
+}
+
 func TestNormalizeRequestChainsByPriority(t *testing.T) {
 	host := newHostWithRecords(
 		capabilityRecord{
@@ -3797,6 +3837,9 @@ type fakeExecutorManager struct {
 	executors     map[string]coreauth.ProviderExecutor
 	registerCalls int
 	unregisters   []string
+	onExecutor    func(string)
+	onRegister    func(coreauth.ProviderExecutor)
+	onUnregister  func(string)
 }
 
 func newFakeExecutorManager() *fakeExecutorManager {
@@ -3806,16 +3849,25 @@ func newFakeExecutorManager() *fakeExecutorManager {
 }
 
 func (m *fakeExecutorManager) Executor(provider string) (coreauth.ProviderExecutor, bool) {
+	if m.onExecutor != nil {
+		m.onExecutor(provider)
+	}
 	executor, okExecutor := m.executors[provider]
 	return executor, okExecutor
 }
 
 func (m *fakeExecutorManager) RegisterExecutor(executor coreauth.ProviderExecutor) {
+	if m.onRegister != nil {
+		m.onRegister(executor)
+	}
 	m.registerCalls++
 	m.executors[executor.Identifier()] = executor
 }
 
 func (m *fakeExecutorManager) UnregisterExecutor(provider string) {
+	if m.onUnregister != nil {
+		m.onUnregister(provider)
+	}
 	delete(m.executors, provider)
 	m.unregisters = append(m.unregisters, provider)
 }

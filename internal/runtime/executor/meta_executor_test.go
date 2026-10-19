@@ -1609,7 +1609,13 @@ func TestMetaExecutor_Execute_PreservesMuseReasoningEncryptedContent_Issue6450(t
 		},
 	}
 
-	const museEncryptedContent = "Q-PaDg-mock-muse-spark-encrypted-reasoning-payload"
+	// Shape-valid synthetic Meta envelope (observed header + 1 KiB bucket),
+	// so this exercises the positively recognized Meta branch end to end
+	// rather than the unknown-format fallback. No captured value is embedded.
+	museEncryptedContent := "Q-PaDgE"
+	for len(museEncryptedContent) < 1426 {
+		museEncryptedContent += "A"
+	}
 	reqPayload := []byte(`{"model":"muse-spark-1.3","store":false,"input":[` +
 		`{"id":"rs_1","type":"reasoning","encrypted_content":"` + museEncryptedContent + `","content":[{"type":"reasoning_text","text":"thinking step"}],"summary":[]},` +
 		`{"id":"rs_claude","type":"reasoning","encrypted_content":"` + testClaudeCAISSample + `","summary":[]},` +

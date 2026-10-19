@@ -128,19 +128,21 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 
-	applyAuthDisabledState(targetAuth, *req.Disabled)
-	updatedAuth, err := h.authManager.Update(ctx, targetAuth)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+	updatedAuth, committed, errModify := h.authManager.Modify(ctx, targetAuth.ID, targetAuth.RegistrationEpoch, func(current *coreauth.Auth) error {
+		applyAuthDisabledState(current, *req.Disabled)
+		return nil
+	})
+	if errModify != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", errModify)})
 		return
 	}
-	hookAuth := updatedAuth
-	if hookAuth == nil {
-		hookAuth = targetAuth
+	if !committed || updatedAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
 	}
 	locked = false
 	h.authStatusMu.Unlock()
-	if errHook := h.invokePostAuthPersistHooks(ctx, []*coreauth.Auth{hookAuth}); errHook != nil {
+	if errHook := h.invokePostAuthPersistHooks(ctx, []*coreauth.Auth{updatedAuth}); errHook != nil {
 		log.Errorf("post-auth persist hook failed for status update on %s: %v", targetAuth.ID, errHook)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to synchronize auth runtime: %v", errHook)})
 		return
@@ -178,17 +180,18 @@ func (h *Handler) patchPluginVirtualSourceStatus(ctx context.Context, targetAuth
 			!sameAuthFilePath(authAttribute(auth, coreauth.AttributeVirtualSource), sourcePath) {
 			continue
 		}
-		applyAuthDisabledState(auth, disabled)
-		auth.UpdatedAt = now
-		updated, errUpdate := h.authManager.Update(ctx, auth)
+		updated, committed, errUpdate := h.authManager.Modify(ctx, auth.ID, auth.RegistrationEpoch, func(current *coreauth.Auth) error {
+			applyAuthDisabledState(current, disabled)
+			current.UpdatedAt = now
+			return nil
+		})
 		if errUpdate != nil {
 			return nil, fmt.Errorf("failed to update auth %s: %w", auth.ID, errUpdate)
 		}
-		hookAuth := updated
-		if hookAuth == nil {
-			hookAuth = auth
+		if !committed || updated == nil {
+			continue
 		}
-		hookAuths = append(hookAuths, hookAuth)
+		hookAuths = append(hookAuths, updated)
 	}
 	return hookAuths, nil
 }
@@ -399,6 +402,44 @@ func (h *Handler) patchAuthFileFields(
 	if coreauth.IsPluginVirtualAuth(targetAuth) {
 		return &authFileFieldsPatchError{status: http.StatusConflict, message: errPluginVirtualAuth.Error()}
 	}
+
+	updatedAuth, committed, errModify := h.authManager.Modify(ctx, targetAuth.ID, targetAuth.RegistrationEpoch, func(current *coreauth.Auth) error {
+		return applyAuthFileFieldsPatch(current, fields, requestRetryPatch)
+	})
+	if errModify != nil {
+		var patchErr *authFileFieldPatchError
+		if errors.As(errModify, &patchErr) {
+			return &authFileFieldsPatchError{status: http.StatusBadRequest, message: patchErr.message}
+		}
+		return &authFileFieldsPatchError{
+			status:  http.StatusInternalServerError,
+			message: fmt.Sprintf("failed to update auth: %v", errModify),
+		}
+	}
+	if !committed || updatedAuth == nil {
+		return &authFileFieldsPatchError{status: http.StatusNotFound, message: "auth file not found"}
+	}
+	if h.postAuthPersistHook != nil {
+		if errHook := h.postAuthPersistHook(ctx, updatedAuth); errHook != nil {
+			return &authFileFieldsPatchError{
+				status:  http.StatusInternalServerError,
+				message: fmt.Sprintf("post-auth persist hook failed: %v", errHook),
+			}
+		}
+	}
+
+	return nil
+}
+
+type authFileFieldPatchError struct {
+	message string
+}
+
+func (e *authFileFieldPatchError) Error() string {
+	return e.message
+}
+
+func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, fields map[string]json.RawMessage, requestRetryPatch authFileRequestRetryPatch) error {
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
 
 	changed := false
@@ -406,18 +447,15 @@ func (h *Handler) patchAuthFileFields(
 	for key, rawValue := range fields {
 		fieldPath := strings.TrimSpace(key)
 		if fieldPath == "" {
-			return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "field name is required"}
+			return &authFileFieldPatchError{message: "field name is required"}
 		}
 		value, errDecode := decodeAuthFileFieldValue(rawValue)
 		if errDecode != nil {
-			return &authFileFieldsPatchError{
-				status:  http.StatusBadRequest,
-				message: fmt.Sprintf("invalid field %s", fieldPath),
-			}
+			return &authFileFieldPatchError{message: fmt.Sprintf("invalid field %s", fieldPath)}
 		}
 		if rootAuthFileField(fieldPath) == "excluded_models" {
 			if fieldPath != "excluded_models" {
-				return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "excluded_models does not support nested fields"}
+				return &authFileFieldPatchError{message: "excluded_models does not support nested fields"}
 			}
 			if value != nil {
 				models, okModels := value.([]any)
@@ -429,7 +467,7 @@ func (h *Handler) patchAuthFileFields(
 					}
 				}
 				if !validModels {
-					return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "excluded_models must be a string array or null"}
+					return &authFileFieldPatchError{message: "excluded_models must be a string array or null"}
 				}
 			}
 		}
@@ -442,20 +480,20 @@ func (h *Handler) patchAuthFileFields(
 				delete(targetAuth.Metadata, coreauth.AttributeWeight)
 			} else {
 				if _, okNumber := value.(json.Number); !okNumber {
-					return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "weight must be an integer"}
+					return &authFileFieldPatchError{message: "weight must be an integer"}
 				}
 				weight, errWeight := credentialweight.ParseValue(value)
 				if errWeight != nil {
-					return &authFileFieldsPatchError{status: http.StatusBadRequest, message: errWeight.Error()}
+					return &authFileFieldPatchError{message: errWeight.Error()}
 				}
 				targetAuth.Metadata[coreauth.AttributeWeight] = weight
 			}
 		} else if rootAuthFileField(fieldPath) == coreauth.AttributeWeight {
-			return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "weight does not support nested fields"}
+			return &authFileFieldPatchError{message: "weight does not support nested fields"}
 		} else if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
 		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
-			return &authFileFieldsPatchError{status: http.StatusBadRequest, message: errSet.Error()}
+			return &authFileFieldPatchError{message: errSet.Error()}
 		}
 		if root := rootAuthFileField(fieldPath); root != "" {
 			touchedRoots[root] = struct{}{}
@@ -478,7 +516,7 @@ func (h *Handler) patchAuthFileFields(
 		if _, touched := touchedRoots["excluded_models"]; touched {
 			excluded, errExcluded := synthesizer.ExtractExcludedModelsFromMetadata(targetAuth.Metadata)
 			if errExcluded != nil {
-				return &authFileFieldsPatchError{status: http.StatusBadRequest, message: errExcluded.Error()}
+				return &authFileFieldPatchError{message: errExcluded.Error()}
 			}
 			// ApplyAuthExcludedModelsMeta never clears attributes, so drop stale values first.
 			delete(targetAuth.Attributes, "excluded_models")
@@ -490,31 +528,10 @@ func (h *Handler) patchAuthFileFields(
 	}
 
 	if !changed {
-		return &authFileFieldsPatchError{status: http.StatusBadRequest, message: "no fields to update"}
+		return &authFileFieldPatchError{message: "no fields to update"}
 	}
 
 	targetAuth.UpdatedAt = time.Now()
-
-	updatedAuth, err := h.authManager.Update(ctx, targetAuth)
-	if err != nil {
-		return &authFileFieldsPatchError{
-			status:  http.StatusInternalServerError,
-			message: fmt.Sprintf("failed to update auth: %v", err),
-		}
-	}
-	if h.postAuthPersistHook != nil {
-		hookAuth := updatedAuth
-		if hookAuth == nil {
-			hookAuth = targetAuth
-		}
-		if errHook := h.postAuthPersistHook(ctx, hookAuth); errHook != nil {
-			return &authFileFieldsPatchError{
-				status:  http.StatusInternalServerError,
-				message: fmt.Sprintf("post-auth persist hook failed: %v", errHook),
-			}
-		}
-	}
-
 	return nil
 }
 

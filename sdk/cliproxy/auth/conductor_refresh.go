@@ -121,7 +121,7 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if hasUnauthorizedAuthFailure(a) || hasDisabledInvalidGrantFailure(a) {
 		return false
 	}
-	if !usesUpstreamXAIOAuthLifecycle(a) && hasTerminalRefreshAuthFailure(a) && !a.HasValidAccessToken(now) {
+	if !usesUpstreamXAIOAuthLifecycle(a) && hasTerminalRefreshAuthFailure(a) && !a.HasValidAccessToken(now) && a.NextRefreshAfter.IsZero() {
 		return false
 	}
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
@@ -142,6 +142,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 			return needOuter
 		}
 		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "codex") && a.RejectedAccessToken != "" && a.RejectedAccessToken == authAccessToken(a) && authHasRefreshCredential(a) {
+		return true
 	}
 
 	lastRefresh := a.LastRefreshedAt
@@ -180,7 +183,7 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 		return false
 	}
 	if hasExpiry && !expiry.IsZero() {
-		return time.Until(expiry) <= *lead
+		return expiry.Sub(now) <= *lead
 	}
 	if !lastRefresh.IsZero() {
 		return now.Sub(lastRefresh) >= *lead
@@ -349,7 +352,7 @@ func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, regis
 		m.mu.Unlock()
 		return nil
 	}
-	if !usesUpstreamXAIOAuthLifecycle(auth) && hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now) {
+	if !usesUpstreamXAIOAuthLifecycle(auth) && hasTerminalRefreshAuthFailure(auth) && !auth.HasValidAccessToken(now) && auth.NextRefreshAfter.IsZero() {
 		m.mu.Unlock()
 		return nil
 	}
@@ -801,15 +804,13 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 	releaseMutation := m.lockAuthMutation(id)
 	defer releaseMutation()
 	m.mu.Lock()
-	if current := m.auths[id]; current != nil && authAccessToken(current) == failedAccessToken {
-		if _, hasExp := current.AccessTokenExpirationTime(); !hasExp {
-			current.Generation++
-			current.UpdatedAt = time.Now()
-			current.RejectedAccessToken = failedAccessToken
-			m.auths[id] = current
-			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
-			}
+	if current := m.auths[id]; current != nil && authAccessToken(current) == failedAccessToken && current.RejectedAccessToken != failedAccessToken {
+		current.Generation++
+		current.UpdatedAt = time.Now()
+		current.RejectedAccessToken = failedAccessToken
+		m.auths[id] = current
+		if m.scheduler != nil {
+			m.scheduler.upsertAuth(current.Clone())
 		}
 	}
 	m.mu.Unlock()
@@ -1014,6 +1015,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 					shouldUnschedule = true
 				case terminal && !hasValidAccessToken:
 					current.NextRefreshAfter = time.Time{}
+					current.NextRetryAfter = time.Time{}
 					current.Unavailable = true
 					current.Status = StatusError
 					current.StatusMessage = current.LastError.Code

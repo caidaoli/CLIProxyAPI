@@ -404,6 +404,17 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 		status.FilesProcessed++
 		if result.err != nil {
 			status.FilesFailed++
+			if !w.withActiveAuthLoadScan(ctx, sequence, func() {
+				w.clientsMutex.Lock()
+				defer w.clientsMutex.Unlock()
+				if w.pathGenerationCurrentLocked(result.normalized, result.generation) {
+					if _, known := w.lastAuthHashes[result.normalized]; known {
+						w.lastAuthHashes[result.normalized] = ""
+					}
+				}
+			}) {
+				return false
+			}
 			continue
 		}
 		generationCurrent := false

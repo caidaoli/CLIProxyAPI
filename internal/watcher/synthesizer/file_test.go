@@ -1192,3 +1192,50 @@ func TestSynthesizeAuthFile_CodexPlanType(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSynthesizerRecordsIncompleteFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	emptyPath := filepath.Join(tempDir, "empty.json")
+	partialPath := filepath.Join(tempDir, "partial.json")
+	validZeroPath := filepath.Join(tempDir, "valid_zero.json")
+	validAuthPath := filepath.Join(tempDir, "valid_auth.json")
+
+	if errWrite := os.WriteFile(emptyPath, nil, 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(partialPath, []byte(`{"type":"codex"`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(validZeroPath, []byte(`{}`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if errWrite := os.WriteFile(validAuthPath, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, errSynthesize := NewFileSynthesizer().Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
+	}
+	if len(auths) != 1 || auths[0].ID != "valid_auth.json" {
+		t.Fatalf("Synthesize() auths = %#v, want only valid_auth.json", auths)
+	}
+	if _, ok := ctx.IncompleteFiles[emptyPath]; !ok {
+		t.Fatalf("expected empty file %s in IncompleteFiles, got %#v", emptyPath, ctx.IncompleteFiles)
+	}
+	if _, ok := ctx.IncompleteFiles[partialPath]; !ok {
+		t.Fatalf("expected partial file %s in IncompleteFiles, got %#v", partialPath, ctx.IncompleteFiles)
+	}
+	if _, ok := ctx.IncompleteFiles[validZeroPath]; ok {
+		t.Fatalf("did not expect valid zero-auth file %s in IncompleteFiles", validZeroPath)
+	}
+	if _, ok := ctx.IncompleteFiles[validAuthPath]; ok {
+		t.Fatalf("did not expect valid auth file %s in IncompleteFiles", validAuthPath)
+	}
+}

@@ -178,6 +178,7 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		}
 	}
 	h.executorModelClientIDs = nextModelClients
+	h.mu.Unlock()
 
 	for _, registration := range registrations {
 		if registration.adapter == nil || registration.provider == "" {
@@ -192,7 +193,6 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		}
 		manager.UnregisterExecutor(provider)
 	}
-	h.mu.Unlock()
 
 	if modelRegistry == nil {
 		return

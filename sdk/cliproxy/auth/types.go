@@ -785,6 +785,14 @@ func (a *Auth) AccountInfo() (string, string) {
 					return "oauth", email
 				}
 			}
+			if sa, ok := a.Metadata["service_account"].(map[string]any); ok {
+				if v, okEmail := sa["client_email"].(string); okEmail {
+					email := strings.TrimSpace(v)
+					if email != "" {
+						return "oauth", email
+					}
+				}
+			}
 		}
 		return "oauth", ""
 	case AuthKindAPIKey:
@@ -854,6 +862,11 @@ func (a *Auth) ExpirationTime() (time.Time, bool) {
 	return a.OuterExpirationTime()
 }
 
+// CodexOuterRefreshLead is the conservative proactive refresh lead time before
+// the nominal 10-day Codex OAuth JWT expiration, refreshing tokens well ahead
+// of early upstream access-token invalidation.
+const CodexOuterRefreshLead = 96 * time.Hour
+
 // CodexSIWCRefreshLead is the minimum remaining validity required before refreshing
 // a Sign in with ChatGPT (SIWC) token, matching pi's DEFAULT_OAUTH_MINIMUM_VALIDITY_MS (5 minutes).
 const CodexSIWCRefreshLead = 5 * time.Minute
@@ -887,6 +900,11 @@ func CodexOuterNeedsRefresh(a *Auth, now time.Time) (dueAt time.Time, hasRefresh
 		return time.Time{}, false, false
 	}
 	hasRefresh = true
+
+	outerToken := authOuterAccessToken(a)
+	if outerToken == "" || (a.RejectedAccessToken != "" && a.RejectedAccessToken == outerToken) {
+		return now, true, true
+	}
 
 	var lastRefresh time.Time
 	if ts, ok := authLastRefreshTimestamp(a); ok && !ts.IsZero() {
@@ -923,7 +941,7 @@ func CodexOuterNeedsRefresh(a *Auth, now time.Time) (dueAt time.Time, hasRefresh
 	}
 	lead := ProviderRefreshLead(provider, a.Runtime)
 	if lead == nil && provider == "codex" {
-		d := 24 * time.Hour
+		d := CodexOuterRefreshLead
 		lead = &d
 	}
 	if lead == nil {
@@ -1178,11 +1196,15 @@ func ProviderRefreshLead(provider string, runtime any) *time.Duration {
 	refreshLeadMu.RLock()
 	factory := refreshLeadFactories[provider]
 	refreshLeadMu.RUnlock()
-	if factory == nil {
+	if factory != nil {
+		if lead := factory(); lead != nil && *lead > 0 {
+			return lead
+		}
 		return nil
 	}
-	if lead := factory(); lead != nil && *lead > 0 {
-		return lead
+	if provider == "codex" {
+		d := CodexOuterRefreshLead
+		return &d
 	}
 	return nil
 }

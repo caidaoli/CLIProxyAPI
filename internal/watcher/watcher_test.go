@@ -443,6 +443,37 @@ func TestAuthFileClientChangesNotifyUsageSubscribersToRefresh(t *testing.T) {
 	requireWatcherUsagePayload(t, subscriber, `{"refresh":true}`)
 }
 
+func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
+	tmpDir := t.TempDir()
+	authFile := filepath.Join(tmpDir, "sample.json")
+	if err := os.WriteFile(authFile, []byte(`{"type":"codex","email":"u@example.com"}`), 0o644); err != nil {
+		t.Fatalf("failed to create auth file: %v", err)
+	}
+
+	origSnapshot := snapshotCoreAuthsFunc
+	var snapshotCalls int32
+	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
+		atomic.AddInt32(&snapshotCalls, 1)
+		return origSnapshot(cfg, authDir, parser)
+	}
+	defer func() { snapshotCoreAuthsFunc = origSnapshot }()
+
+	w := &Watcher{
+		authDir:          tmpDir,
+		lastAuthHashes:   make(map[string]string),
+		lastAuthContents: make(map[string]*coreauth.Auth),
+		fileAuthsByPath:  make(map[string]map[string]*coreauth.Auth),
+	}
+	w.SetConfig(&config.Config{AuthDir: tmpDir})
+
+	w.addOrUpdateClient(authFile)
+	w.removeClient(authFile)
+
+	if got := atomic.LoadInt32(&snapshotCalls); got != 0 {
+		t.Fatalf("expected auth file events to avoid full snapshot, got %d calls", got)
+	}
+}
+
 func TestAuthSliceToMap(t *testing.T) {
 	t.Parallel()
 
@@ -1841,6 +1872,7 @@ func TestReloadClientsFiltersOAuthProvidersWithoutRescan(t *testing.T) {
 		lastAuthHashes: map[string]string{"cached": "hash"},
 	}
 
+	w.SetFileAuthLoadingEnabled(false)
 	w.reloadClients(false, []string{"match"}, false)
 
 	w.clientsMutex.RLock()
@@ -1962,6 +1994,52 @@ func TestInitialAuthLoadMalformedFileDoesNotBlockValidFile(t *testing.T) {
 	status := w.AuthLoadStatus()
 	if status.State != AuthLoadStateDegraded || status.FilesProcessed != 2 || status.FilesFailed != 1 || status.AuthsLoaded != 1 {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestProgressiveProviderReloadPreservesIncompleteFile(t *testing.T) {
+	for _, partial := range []string{"", `{"type":"codex"`} {
+		t.Run(fmt.Sprintf("partial_%q", partial), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "account.json")
+			payload := []byte(`{"type":"codex"}`)
+			mustWriteFile(t, path, payload)
+			queue := make(chan AuthUpdateBatch, 4)
+			w := newInitialLoadTestWatcher(t, dir, queue)
+			acknowledgeInitialLoadUntilDone(t, queue, w.StartInitialAuthLoad(context.Background(), 1))
+
+			mustWriteFile(t, path, []byte(partial))
+			w.SetConfig(&config.Config{AuthDir: dir, AuthLoadWorkers: 1, OAuthExcludedModels: map[string][]string{"codex": {"excluded-model"}}})
+			w.reloadClients(false, []string{"codex"}, false)
+			w.authLoadMu.Lock()
+			done := w.authLoadDone
+			w.authLoadMu.Unlock()
+			acknowledgeInitialLoadUntilDone(t, queue, done)
+			if status := w.AuthLoadStatus(); status.State != AuthLoadStateDegraded || status.FilesFailed != 1 {
+				t.Fatalf("incomplete scan status = %+v", status)
+			}
+			auths := w.SnapshotCoreAuths()
+			if len(auths) != 1 || auths[0].ID != "account.json" {
+				t.Fatalf("incomplete provider reload lost credential: %+v", auths)
+			}
+			select {
+			case batch := <-queue:
+				t.Fatalf("incomplete provider reload emitted updates: %+v", batch.Updates)
+			default:
+			}
+
+			// Restoring identical bytes must still apply the pending provider configuration.
+			mustWriteFile(t, path, payload)
+			w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
+			select {
+			case batch := <-queue:
+				if len(batch.Updates) != 1 || batch.Updates[0].ID != "account.json" || batch.Updates[0].Action != AuthUpdateActionModify {
+					t.Fatalf("completed write did not refresh credential: %+v", batch.Updates)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("completed write did not apply pending provider reload")
+			}
+		})
 	}
 }
 
@@ -2214,6 +2292,10 @@ func TestProgressiveAuthEventsWaitForInitialLoadActivation(t *testing.T) {
 	}
 	done := w.StartInitialAuthLoad(lifecycleCtx, 1)
 	acknowledgeInitialLoadUntilDone(t, queue, done)
+	// A live event may supersede the scan after advancing its path generation.
+	// Wait for that event to finish committing before reading the final snapshot.
+	w.authRescanMu.Lock()
+	defer w.authRescanMu.Unlock()
 	if got := reads.Load(); got != 1 {
 		t.Fatalf("initial scan reads = %d, want 1", got)
 	}

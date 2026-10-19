@@ -47,7 +47,7 @@ func TestManagerSavedFieldsPublished(t *testing.T) {
 }
 
 func testManagerSavedFieldsPublished(t *testing.T, saveErr error) {
-	for _, operation := range []string{"Register", "Update", "Prepare", "Refresh"} {
+	for _, operation := range []string{"Register", "Update", "Modify", "Prepare", "Refresh"} {
 		t.Run(operation, func(t *testing.T) {
 			ctx := context.Background()
 			hook := &savedFieldsHook{}
@@ -69,6 +69,13 @@ func testManagerSavedFieldsPublished(t *testing.T, saveErr error) {
 				switch operation {
 				case "Update":
 					returned, err = manager.Update(ctx, input)
+				case "Modify":
+					returned, _, err = manager.Modify(ctx, input.ID, input.RegistrationEpoch, func(current *Auth) error {
+						current.FileName = ""
+						current.Attributes = nil
+						delete(current.Metadata, "disabled")
+						return nil
+					})
 				case "Prepare":
 					returned, err = manager.UpdatePreparedAuth(ctx, base, input)
 				case "Refresh":
