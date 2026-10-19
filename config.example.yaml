@@ -996,6 +996,11 @@ oauth:
   #       max-context-length: 1048576
 
   # OAuth provider excluded models
+  # Applies to OAuth/file-backed credentials of each provider.
+  # A credential's own non-empty "excluded_models" list (set in its auth JSON file) takes priority
+  # over these rules for that credential and is not merged with them. Credentials without their own
+  # list (missing, empty, or null) inherit the current rules here; changes to these rules
+  # take effect for them on config reload.
   # excluded-models:
   #   vertex:
   #     - "gemini-3-pro-preview"

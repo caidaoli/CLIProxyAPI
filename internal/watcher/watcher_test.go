@@ -29,10 +29,9 @@ import (
 
 func TestApplyAuthExcludedModelsMeta_APIKey(t *testing.T) {
 	auth := &coreauth.Auth{Attributes: map[string]string{}}
-	cfg := &config.Config{}
 	perKey := []string{" Model-1 ", "model-2"}
 
-	synthesizer.ApplyAuthExcludedModelsMeta(auth, cfg, perKey, "apikey")
+	synthesizer.ApplyAuthExcludedModelsMeta(auth, perKey, "apikey")
 
 	expected := diff.ComputeExcludedModelsHash([]string{"model-1", "model-2"})
 	if got := auth.Attributes["excluded_models_hash"]; got != expected {
@@ -48,17 +47,14 @@ func TestApplyAuthExcludedModelsMeta_OAuthProvider(t *testing.T) {
 		Provider:   "TestProv",
 		Attributes: map[string]string{},
 	}
-	cfg := &config.Config{
-		OAuthExcludedModels: map[string][]string{
-			"testprov": {"A", "b"},
-		},
-	}
 
-	synthesizer.ApplyAuthExcludedModelsMeta(auth, cfg, nil, "oauth")
+	synthesizer.ApplyAuthExcludedModelsMeta(auth, nil, "oauth")
 
-	expected := diff.ComputeExcludedModelsHash([]string{"a", "b"})
-	if got := auth.Attributes["excluded_models_hash"]; got != expected {
-		t.Fatalf("expected hash %s, got %s", expected, got)
+	// Global oauth-excluded-models are resolved at model registration, not stored on the auth.
+	for _, key := range []string{"excluded_models", "excluded_models_hash"} {
+		if got, ok := auth.Attributes[key]; ok {
+			t.Fatalf("expected %s to be absent, got %q", key, got)
+		}
 	}
 	if got := auth.Attributes["auth_kind"]; got != "oauth" {
 		t.Fatalf("expected auth_kind=oauth, got %s", got)
@@ -1453,6 +1449,83 @@ func TestReloadConfigFiltersAffectedOAuthProviders(t *testing.T) {
 	}
 	if !foundB {
 		t.Fatal("expected unaffected provider auth to remain")
+	}
+}
+
+func TestReloadConfigRedispatchesUnchangedAuthForGlobalOAuthExclusionChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "claude.json"), []byte(`{"type":"claude","email":"a@example.com"}`), 0o644); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+	newConfig := func(excluded string) *config.Config {
+		return &config.Config{
+			AuthDir:             authDir,
+			CredentialInFlight:  config.DefaultCredentialInFlightConfig(),
+			OAuthExcludedModels: map[string][]string{"claude": {excluded}},
+		}
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	data, errMarshal := yaml.Marshal(newConfig("m2"))
+	if errMarshal != nil {
+		t.Fatalf("failed to marshal config: %v", errMarshal)
+	}
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	queue := make(chan AuthUpdateBatch, 8)
+	w, errNew := NewWatcher(configPath, authDir, nil)
+	if errNew != nil {
+		t.Fatal(errNew)
+	}
+	w.SetConfig(newConfig("m1"))
+	w.SetAuthUpdateQueue(queue)
+	t.Cleanup(func() {
+		if errStop := w.Stop(); errStop != nil {
+			t.Error(errStop)
+		}
+		w.cancelAndWaitForAuthLoad()
+	})
+
+	nextUpdate := func(stage string) AuthUpdate {
+		t.Helper()
+		select {
+		case batch := <-queue:
+			if len(batch.Updates) != 1 {
+				t.Fatalf("%s: expected one auth update, got %+v", stage, batch)
+			}
+			update := batch.Updates[0]
+			if batch.Result != nil {
+				batch.Result <- []AuthUpdateResult{{ID: update.ID, Loaded: true}}
+			}
+			if update.Auth == nil || update.Auth.Provider != "claude" {
+				t.Fatalf("%s: unexpected auth update %+v", stage, update)
+			}
+			// Global rules are resolved at registration and never stored on the credential.
+			if value, ok := update.Auth.Attributes["excluded_models"]; ok {
+				t.Fatalf("%s: excluded_models attribute = %q, want absent", stage, value)
+			}
+			return update
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: timed out waiting for auth update", stage)
+		}
+		return AuthUpdate{}
+	}
+
+	initialDone := w.StartInitialAuthLoad(context.Background(), 1)
+	initial := nextUpdate("initial load")
+	<-initialDone
+
+	// The credential is unchanged, so only the affected-provider refresh can trigger re-registration.
+	if ok := w.reloadConfig(); !ok {
+		t.Fatal("expected reloadConfig to succeed")
+	}
+	if reloaded := nextUpdate("global exclusion change"); reloaded.ID != initial.ID {
+		t.Fatalf("reloaded auth ID = %q, want %q", reloaded.ID, initial.ID)
 	}
 }
 

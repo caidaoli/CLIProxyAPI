@@ -198,7 +198,11 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	if err = h.writeAuthFile(ctx, normalizeAuthUploadCredentialName(name), data); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(err, errInvalidAuthFile) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"status": "ok"})
@@ -642,7 +646,11 @@ func (h *Handler) uploadMultipartAuthFiles(c *gin.Context, ctx context.Context) 
 			c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json, .txt, .zip, .tar, .tar.gz, or .tgz"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": failure.err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(failure.err, errInvalidAuthFile) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": failure.err.Error()})
 	case fileCount == 1 && uploadedCount == 1 && len(failed) == 0:
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	case len(failed) > 0:
@@ -1266,6 +1274,10 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		return nil, errDecode
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
+	// Loading tolerates invalid exclusion rules, so reject them here before anything is persisted.
+	if _, errExcluded := synthesizer.ExtractExcludedModelsFromMetadata(metadata); errExcluded != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errExcluded)
+	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {
 		provider = "unknown"
@@ -1290,7 +1302,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		}
 		generated, errSynthesize := synthesizer.SynthesizeAuthFile(sctx, path, data)
 		if errSynthesize != nil {
-			return nil, fmt.Errorf("invalid auth file: %w", errSynthesize)
+			return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errSynthesize)
 		}
 		if len(generated) > 0 && generated[0] != nil {
 			auth = generated[0].Clone()
@@ -1333,7 +1345,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 func decodeAuthFileMetadata(data []byte) (map[string]any, error) {
 	metadata := make(map[string]any)
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
-		return nil, fmt.Errorf("invalid auth file: %w", errUnmarshal)
+		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errUnmarshal)
 	}
 	return metadata, nil
 }

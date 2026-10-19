@@ -411,6 +411,9 @@ func (w *Watcher) stopDispatch() {
 }
 
 func authEqual(a, b *coreauth.Auth) bool {
+	if a != nil && b != nil && a.HasFileSnapshot() && b.HasFileSnapshot() && !a.SameFileSnapshot(b) {
+		return false
+	}
 	return reflect.DeepEqual(normalizeAuth(a), normalizeAuth(b))
 }
 
@@ -419,6 +422,7 @@ func normalizeAuth(a *coreauth.Auth) *coreauth.Auth {
 		return nil
 	}
 	clone := a.Clone()
+	clone.ClearFileSnapshot()
 	clone.CreatedAt = time.Time{}
 	clone.UpdatedAt = time.Time{}
 	clone.LastRefreshedAt = time.Time{}

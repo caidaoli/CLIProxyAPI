@@ -1,13 +1,16 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -123,6 +126,98 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// fileSnapshotPath and fileSnapshotDigest bind an unversioned file-synthesized
+	// Auth snapshot to the source file path and SHA-256 byte digest it observed.
+	// Cleared when committed to a Manager so runtime clones are not treated as
+	// unversioned file snapshots.
+	fileSnapshotPath   string `json:"-"`
+	fileSnapshotDigest string `json:"-"`
+}
+
+var readAuthSnapshotFileFunc = os.ReadFile
+
+func canonicalAuthFileDigest(data []byte) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var parsed any
+	if errDecode := decoder.Decode(&parsed); errDecode == nil {
+		var trailing any
+		if errTrailing := decoder.Decode(&trailing); errTrailing == io.EOF {
+			if canonical, errMarshal := json.Marshal(parsed); errMarshal == nil {
+				sum := sha256.Sum256(canonical)
+				return hex.EncodeToString(sum[:])
+			}
+		}
+	}
+	sum := sha256.Sum256(trimmed)
+	return hex.EncodeToString(sum[:])
+}
+
+// BindFileSnapshot binds an unversioned file-synthesized Auth snapshot to the
+// source file path and canonical SHA-256 digest of the bytes from which it was parsed.
+func (a *Auth) BindFileSnapshot(path string, data []byte) {
+	if a == nil || len(data) == 0 {
+		return
+	}
+	digest := canonicalAuthFileDigest(data)
+	if digest == "" {
+		return
+	}
+	a.fileSnapshotPath = strings.TrimSpace(path)
+	a.fileSnapshotDigest = digest
+}
+
+// ClearFileSnapshot removes any unversioned file-observation binding once the
+// Auth is committed to runtime state or normalized for comparison.
+func (a *Auth) ClearFileSnapshot() {
+	if a == nil {
+		return
+	}
+	a.fileSnapshotPath = ""
+	a.fileSnapshotDigest = ""
+}
+
+// HasFileSnapshot reports whether this Auth is an unversioned file-synthesized
+// snapshot bound to a specific file observation digest.
+func (a *Auth) HasFileSnapshot() bool {
+	return a != nil && a.Generation == 0 && a.RegistrationEpoch == 0 && a.fileSnapshotDigest != ""
+}
+
+// SameFileSnapshot reports whether two unversioned file snapshots observed the
+// same canonical file content.
+func (a *Auth) SameFileSnapshot(other *Auth) bool {
+	if !a.HasFileSnapshot() || !other.HasFileSnapshot() {
+		return false
+	}
+	return a.fileSnapshotDigest == other.fileSnapshotDigest && a.fileSnapshotPath == other.fileSnapshotPath
+}
+
+// FileSnapshotMatchesDisk reports whether the backing file on disk still
+// exists, is readable, and matches the canonical digest observed when this
+// snapshot was synthesized.
+func (a *Auth) FileSnapshotMatchesDisk() bool {
+	if !a.HasFileSnapshot() {
+		return true
+	}
+	path := strings.TrimSpace(a.fileSnapshotPath)
+	if path == "" && a.Attributes != nil {
+		path = strings.TrimSpace(a.Attributes[AttributePath])
+		if path == "" {
+			path = strings.TrimSpace(a.Attributes[AttributeSource])
+		}
+	}
+	if path == "" {
+		return false
+	}
+	data, errRead := readAuthSnapshotFileFunc(path)
+	if errRead != nil || len(data) == 0 {
+		return false
+	}
+	return canonicalAuthFileDigest(data) == a.fileSnapshotDigest
 }
 
 // RequestErrorSnapshot is an observational snapshot of the latest failed execution.

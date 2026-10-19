@@ -10154,19 +10154,101 @@ func TestClaudeExecutor_PreservedThinkingInjectionSkipsNonPreservedModel(t *test
 	}
 }
 
-func TestClaudeExecutor_PreservedThinkingInjectionRequiresSignedBlock(t *testing.T) {
-	payload := []byte(`{"model":"claude-haiku-5-5","thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hi"}]}`)
-	seenBody, _ := runClaudeExecutorCapture(t, nil, "", false, "claude-haiku-5-5", payload)
-	if gjson.GetBytes(seenBody, "thinking.block_binding").Exists() {
-		t.Fatalf("request without replayed signed thinking must not gain block_binding: %s", seenBody)
+func TestClaudeExecutor_PreservedThinkingRequiresSignedBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "explicit adaptive thinking",
+			payload: `{"model":"claude-haiku-5-5","thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name:    "omitted thinking",
+			payload: `{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seenBody, _ := runClaudeExecutorCapture(t, nil, "", false, "claude-haiku-5-5", []byte(tc.payload))
+			if gjson.GetBytes(seenBody, "thinking.block_binding").Exists() {
+				t.Fatalf("request without replayed signed thinking must not gain block_binding: %s", seenBody)
+			}
+		})
 	}
 }
 
-func TestClaudeExecutor_PreservedThinkingInjectionRequiresThinkingType(t *testing.T) {
-	payload := []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"earlier","signature":"` + preservedThinkingTestSignature + `"}]},{"role":"user","content":"continue"}]}`)
+func TestClaudeExecutor_PreservedThinkingOmittedThinkingSynthesizesAdaptiveBinding(t *testing.T) {
+	for _, model := range []string{"claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"} {
+		for _, tc := range []struct {
+			name  string
+			block string
+		}{
+			{
+				name:  "signed_thinking",
+				block: `{"type":"thinking","thinking":"earlier","signature":"` + preservedThinkingTestSignature + `"}`,
+			},
+			{
+				name:  "redacted_thinking",
+				block: `{"type":"redacted_thinking","data":"redacted-payload"}`,
+			},
+		} {
+			t.Run(model+"_"+tc.name, func(t *testing.T) {
+				payload := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[` + tc.block + `,{"type":"text","text":"Answer"}]},{"role":"user","content":"continue"}]}`)
+				seenBody, seenHeaders := runClaudeExecutorCapture(t, nil, "", false, model, payload)
+				if got := gjson.GetBytes(seenBody, "thinking.type").String(); got != "adaptive" {
+					t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, seenBody)
+				}
+				if got := gjson.GetBytes(seenBody, "thinking.block_binding.prefix_mismatch_behavior").String(); got != "drop_block" {
+					t.Fatalf("thinking.block_binding.prefix_mismatch_behavior = %q, want drop_block; body=%s", got, seenBody)
+				}
+				if betas := seenHeaders.Get("Anthropic-Beta"); !strings.Contains(betas, claudeThinkingBindingBeta) {
+					t.Fatalf("Anthropic-Beta = %q, want %s", betas, claudeThinkingBindingBeta)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeExecutor_PreservedThinkingTypelessThinkingObjectUntouched(t *testing.T) {
+	payload := []byte(`{"model":"claude-haiku-5-5","thinking":{},"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"earlier","signature":"` + preservedThinkingTestSignature + `"}]},{"role":"user","content":"continue"}]}`)
 	seenBody, _ := runClaudeExecutorCapture(t, nil, "", false, "claude-haiku-5-5", payload)
-	if gjson.GetBytes(seenBody, "thinking.block_binding").Exists() {
-		t.Fatalf("thinking.block_binding must never be synthesized without a caller thinking config: %s", seenBody)
+	if gjson.GetBytes(seenBody, "thinking.type").Exists() || gjson.GetBytes(seenBody, "thinking.block_binding").Exists() {
+		t.Fatalf("thinking object without type must stay untouched: %s", seenBody)
+	}
+}
+
+func TestClaudeExecutor_PreservedThinkingForcedToolChoiceKeepsThinkingOff(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		thinking   string
+		toolChoice string
+	}{
+		{
+			name:       "omitted thinking with tool_choice any",
+			toolChoice: `{"type":"any"}`,
+		},
+		{
+			name:       "omitted thinking with tool_choice tool",
+			toolChoice: `{"type":"tool","name":"lookup"}`,
+		},
+		{
+			name:       "explicit adaptive thinking stripped by tool_choice any",
+			thinking:   `"thinking":{"type":"adaptive"},`,
+			toolChoice: `{"type":"any"}`,
+		},
+		{
+			name:       "explicit adaptive thinking stripped by tool_choice tool",
+			thinking:   `"thinking":{"type":"adaptive"},`,
+			toolChoice: `{"type":"tool","name":"lookup"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(`{"model":"claude-haiku-5-5",` + tc.thinking + `"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":` + tc.toolChoice + `,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"earlier","signature":"` + preservedThinkingTestSignature + `"}]},{"role":"user","content":"continue"}]}`)
+			seenBody, _ := runClaudeExecutorCapture(t, nil, "", false, "claude-haiku-5-5", payload)
+			if gjson.GetBytes(seenBody, "thinking").Exists() {
+				t.Fatalf("forced tool_choice must keep thinking off: %s", seenBody)
+			}
+		})
 	}
 }
 

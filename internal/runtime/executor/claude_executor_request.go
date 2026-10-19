@@ -386,21 +386,29 @@ func claudeBodyHasSignedThinkingBlock(body []byte) bool {
 // thinking blocks, default thinking.block_binding.prefix_mismatch_behavior to
 // drop_block so a prefix mismatch (client reconnect resending history, a
 // changed tools list, reconstructed server-tool blocks) drops the bound
-// blocks instead of failing the whole request with a 400. A caller-supplied
-// behavior always wins, and injection requires an explicit thinking.type so
-// a bare thinking.block_binding object is never synthesized on thinking-less
-// requests. This must run before user payload rules, which stay the final
-// semantic barrier and may override or filter the injected value.
+// blocks instead of failing the whole request with a 400. On preserved-thinking
+// models, an omitted thinking field runs adaptive thinking and is equivalent to
+// {"type":"adaptive"}, so synthesize that adaptive thinking object unless
+// tool_choice forces tool use. A thinking object without a type and any
+// caller-supplied prefix_mismatch_behavior stay untouched. This must run before
+// user payload rules, which stay the final semantic barrier and may override or
+// filter the injected value.
 func applyClaudePreservedThinkingBinding(body []byte) []byte {
 	model := gjson.GetBytes(body, "model").String()
-	if len(body) == 0 || !isClaudePreservedThinkingModel(model) {
+	if len(body) == 0 || !isClaudePreservedThinkingModel(model) || claudeToolChoiceForcesToolUse(body) {
 		return body
 	}
-	if !claudeThinkingTypeAcceptsBlockBinding(model, gjson.GetBytes(body, "thinking.type").String()) || gjson.GetBytes(body, "thinking.block_binding.prefix_mismatch_behavior").Exists() {
-		return body
+	thinking := gjson.GetBytes(body, "thinking")
+	if thinking.Exists() {
+		if !claudeThinkingTypeAcceptsBlockBinding(model, thinking.Get("type").String()) || thinking.Get("block_binding.prefix_mismatch_behavior").Exists() {
+			return body
+		}
 	}
 	if !claudeBodyHasSignedThinkingBlock(body) {
 		return body
+	}
+	if !thinking.Exists() {
+		body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 	}
 	body, _ = sjson.SetBytes(body, "thinking.block_binding.prefix_mismatch_behavior", "drop_block")
 	return body
@@ -806,7 +814,7 @@ func classifyClaudeUpstreamError(statusCode int, headers http.Header, body []byt
 func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) error {
 	var retryAfter *time.Duration
 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
-		retryAfter = helps.ParseClaudeRateLimitReset(headers, time.Now())
+		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
 	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
 	if statusCode == http.StatusTooManyRequests {
@@ -893,13 +901,17 @@ func extractAndRemoveBetas(body []byte) ([]string, []byte) {
 	return betas, body
 }
 
+func claudeToolChoiceForcesToolUse(body []byte) bool {
+	toolChoiceType := gjson.GetBytes(body, "tool_choice.type").String()
+	return toolChoiceType == "any" || toolChoiceType == "tool"
+}
+
 // disableThinkingIfToolChoiceForced checks if tool_choice forces tool use and disables thinking.
 // Anthropic API does not allow thinking when tool_choice is set to "any" or a specific tool.
 // See: https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
 func disableThinkingIfToolChoiceForced(body []byte) []byte {
-	toolChoiceType := gjson.GetBytes(body, "tool_choice.type").String()
 	// "auto" is allowed with thinking, but "any" or "tool" (specific tool) are not
-	if toolChoiceType == "any" || toolChoiceType == "tool" {
+	if claudeToolChoiceForcesToolUse(body) {
 		// Remove thinking configuration entirely to avoid API error
 		body, _ = sjson.DeleteBytes(body, "thinking")
 		// Adaptive thinking may also set output_config.effort; remove it to avoid

@@ -935,3 +935,54 @@ func TestPatchAuthFileFields_IDTokenMissingPlanTypeDefaultsToFree(t *testing.T) 
 		t.Fatalf("auth plan_type attribute = %q, want free", got)
 	}
 }
+
+func TestPatchAuthFileFieldsBatch_ExcludedModelsValidation(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	for _, name := range []string{"valid.json", "invalid.json"} {
+		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+			ID: name, FileName: name, Provider: "codex",
+			Metadata:   map[string]any{"type": "codex", "excluded_models": []string{"old-*"}},
+			Attributes: map[string]string{"auth_kind": "oauth", "excluded_models": "old-*"},
+		}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	body := `{"updates":[{"name":"invalid.json","fields":{"excluded_models":[42]}},{"name":"valid.json","fields":{"excluded-models":[" Local-* "]}}]}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v8/management/credentials/fields/batch", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAuthFileFieldsBatch(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Updated int `json:"updated"`
+		Failed  []struct {
+			Name  string `json:"name"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &result); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if result.Updated != 1 || len(result.Failed) != 1 || result.Failed[0].Name != "invalid.json" || result.Failed[0].Error != "excluded_models must be a string array or null" {
+		t.Fatalf("unexpected batch result: %+v", result)
+	}
+	valid, _ := manager.GetByID("valid.json")
+	if got := valid.Attributes["excluded_models"]; got != "local-*" {
+		t.Fatalf("valid credential exclusions = %q, want local-*", got)
+	}
+	invalid, _ := manager.GetByID("invalid.json")
+	if got := invalid.Attributes["excluded_models"]; got != "old-*" {
+		t.Fatalf("rejected credential exclusions changed: %q", got)
+	}
+	rules, ok := invalid.Metadata["excluded_models"].([]string)
+	if !ok || len(rules) != 1 || rules[0] != "old-*" {
+		t.Fatalf("rejected credential metadata changed: %#v", invalid.Metadata)
+	}
+}
