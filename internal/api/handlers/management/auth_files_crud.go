@@ -466,6 +466,8 @@ func (h *Handler) deleteFilteredAuthFile(ctx context.Context, candidate filtered
 	if isUnsafeAuthFileName(name) {
 		return "", http.StatusBadRequest, fmt.Errorf("invalid name")
 	}
+	release := h.beginSIWCFileMutation(ctx, candidate.path)
+	defer release()
 	if errUsage := h.deleteAuthUsage(ctx, h.authsForPath(candidate.path, candidate.authID)...); errUsage != nil {
 		return name, http.StatusInternalServerError, fmt.Errorf("failed to delete usage statistics: %w", errUsage)
 	}
@@ -986,6 +988,8 @@ func (h *Handler) writeAuthFileWithMode(ctx context.Context, name string, data [
 			return errBuild
 		}
 	}
+	release := h.beginSIWCFileMutation(ctx, dst)
+	defer release()
 	if exclusive {
 		file, errOpen := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errOpen != nil {
@@ -1154,6 +1158,8 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = abs
 		}
 	}
+	release := h.beginSIWCFileMutation(ctx, targetPath)
+	defer release()
 	if errUsage := h.deleteAuthUsage(ctx, h.authsForPath(targetPath, targetID)...); errUsage != nil {
 		return filepath.Base(name), http.StatusInternalServerError, fmt.Errorf("failed to delete usage statistics: %w", errUsage)
 	}
