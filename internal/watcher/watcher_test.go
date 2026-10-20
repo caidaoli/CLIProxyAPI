@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2167,6 +2168,90 @@ rescanComplete:
 	}
 	if status := w.AuthLoadStatus(); status.State != AuthLoadStateDegraded {
 		t.Fatalf("status = %+v, want degraded", status)
+	}
+}
+
+func TestFullAuthRescanReadErrorsMatchFileSynthesizer(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		breakFile  func(t *testing.T, target string)
+		wantDelete bool
+		wantState  AuthLoadState
+		wantFailed int64
+	}{
+		{
+			name: "dangling_symlink_unregisters",
+			breakFile: func(t *testing.T, target string) {
+				if errRemove := os.Remove(target); errRemove != nil {
+					t.Fatal(errRemove)
+				}
+			},
+			wantDelete: true,
+			wantState:  AuthLoadStateReady,
+		},
+		{
+			name: "unreadable_target_preserves",
+			breakFile: func(t *testing.T, target string) {
+				if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+					t.Skip("requires Unix file permissions and a non-root user")
+				}
+				if errChmod := os.Chmod(target, 0); errChmod != nil {
+					t.Fatal(errChmod)
+				}
+				t.Cleanup(func() { _ = os.Chmod(target, 0o600) })
+			},
+			wantState:  AuthLoadStateDegraded,
+			wantFailed: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authDir := t.TempDir()
+			target := filepath.Join(t.TempDir(), "target.json")
+			mustWriteFile(t, target, []byte(`{"type":"xai"}`))
+			if errSymlink := os.Symlink(target, filepath.Join(authDir, "account.json")); errSymlink != nil {
+				t.Skipf("symlinks unavailable: %v", errSymlink)
+			}
+			queue := make(chan AuthUpdateBatch, 4)
+			w := newInitialLoadTestWatcher(t, authDir, queue)
+			acknowledgeInitialLoadUntilDone(t, queue, w.StartInitialAuthLoad(context.Background(), 1))
+			if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
+				t.Fatalf("initial auth snapshot = %+v, want one auth", auths)
+			}
+
+			tc.breakFile(t, target)
+			done := w.StartInitialAuthLoad(context.Background(), 1)
+			var updates []AuthUpdate
+			for {
+				select {
+				case batch := <-queue:
+					updates = append(updates, batch.Updates...)
+					batch.Result <- loadedResults(batch.Updates)
+				case <-done:
+					goto rescanComplete
+				case <-time.After(2 * time.Second):
+					t.Fatal("rescan did not complete")
+				}
+			}
+		rescanComplete:
+			if tc.wantDelete {
+				if len(updates) != 1 || updates[0].ID != "account.json" || updates[0].Action != AuthUpdateActionDelete {
+					t.Fatalf("updates = %+v, want one delete for account.json", updates)
+				}
+				if auths := w.SnapshotCoreAuths(); len(auths) != 0 {
+					t.Fatalf("dangling symlink kept credential: %+v", auths)
+				}
+			} else {
+				if len(updates) != 0 {
+					t.Fatalf("unreadable file emitted updates: %+v", updates)
+				}
+				if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
+					t.Fatalf("unreadable file discarded credential: %+v", auths)
+				}
+			}
+			if status := w.AuthLoadStatus(); status.State != tc.wantState || status.FilesFailed != tc.wantFailed || status.FilesProcessed != 1 {
+				t.Fatalf("status = %+v, want state=%s failed=%d processed=1", status, tc.wantState, tc.wantFailed)
+			}
+		})
 	}
 }
 

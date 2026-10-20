@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,6 +51,7 @@ type initialAuthReadResult struct {
 	readTime          time.Duration
 	nativeSynthTime   time.Duration
 	err               error
+	missing           bool
 	enumerationResult bool
 	discovered        int64
 	enumerationTime   time.Duration
@@ -236,6 +239,7 @@ func (w *Watcher) initialAuthReadWorker(ctx context.Context, snapshot authLoadSn
 			readStarted := time.Now()
 			result.raw, result.err = readInitialAuthFile(job.path)
 			result.readTime = time.Since(readStarted)
+			result.missing = errors.Is(result.err, fs.ErrNotExist)
 			if result.err == nil && len(result.raw) == 0 {
 				result.err = os.ErrInvalid
 			}
@@ -364,7 +368,10 @@ func (w *Watcher) aggregateInitialAuthResults(ctx context.Context, sequence uint
 			}
 			metrics.fileRead += result.readTime
 			metrics.nativeSynthesis += result.nativeSynthTime
-			seen[result.normalized] = struct{}{}
+			// Vanished files and dangling symlinks are absent, so reconciliation removes them.
+			if !result.missing {
+				seen[result.normalized] = struct{}{}
+			}
 			pending = append(pending, result)
 			if len(pending) >= authLoadBatchSize {
 				if !flush() {
@@ -402,6 +409,9 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 		}
 		result := &results[i]
 		status.FilesProcessed++
+		if result.missing {
+			continue
+		}
 		if result.err != nil {
 			status.FilesFailed++
 			if !w.withActiveAuthLoadScan(ctx, sequence, func() {
