@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
@@ -978,9 +979,12 @@ func (h *Handler) writeAuthFileWithMode(ctx context.Context, name string, data [
 	watcherManaged := h.authFileLoadingManagedByWatcher()
 	var auth *coreauth.Auth
 	if watcherManaged {
-		if _, errDecode := decodeAuthFileMetadata(data); errDecode != nil {
+		metadata, errDecode := decodeAuthFileMetadata(data)
+		if errDecode != nil {
 			return errDecode
 		}
+		// The watcher registers this file; the stub only selects the Codex file lock.
+		auth = &coreauth.Auth{ID: h.authIDForPath(dst), Metadata: metadata}
 	} else {
 		var errBuild error
 		auth, errBuild = h.buildAuthFromFileData(dst, data)
@@ -990,21 +994,7 @@ func (h *Handler) writeAuthFileWithMode(ctx context.Context, name string, data [
 	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
-	if exclusive {
-		file, errOpen := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if errOpen != nil {
-			return fmt.Errorf("failed to create file: %w", errOpen)
-		}
-		if _, errWrite := file.Write(data); errWrite != nil {
-			_ = file.Close()
-			_ = os.Remove(dst)
-			return fmt.Errorf("failed to write file: %w", errWrite)
-		}
-		if errClose := file.Close(); errClose != nil {
-			_ = os.Remove(dst)
-			return fmt.Errorf("failed to close file: %w", errClose)
-		}
-	} else if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	if errWrite := h.writeAuthFileBytes(dst, data, auth, exclusive); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	h.notifyAuthFileMutation(dst)
@@ -1020,6 +1010,48 @@ func (h *Handler) writeAuthFileWithMode(ctx context.Context, name string, data [
 		}
 	}
 	return nil
+}
+
+func (h *Handler) writeAuthFileBytes(dst string, data []byte, auth *coreauth.Auth, exclusive bool) error {
+	write := func() error {
+		if exclusive {
+			return writeNewFileBytes(dst, data)
+		}
+		return os.WriteFile(dst, data, 0o600)
+	}
+	if h.shouldLockCodexAuthFile(auth) {
+		return codex.WithFileLock(dst, write)
+	}
+	return write()
+}
+
+func writeNewFileBytes(dst string, data []byte) error {
+	file, errOpen := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errOpen != nil {
+		return errOpen
+	}
+	if _, errWrite := file.Write(data); errWrite != nil {
+		_ = file.Close()
+		_ = os.Remove(dst)
+		return errWrite
+	}
+	if errClose := file.Close(); errClose != nil {
+		_ = os.Remove(dst)
+		return errClose
+	}
+	return nil
+}
+
+func (h *Handler) shouldLockCodexAuthFile(auth *coreauth.Auth) bool {
+	if coreauth.IsCodexAuthRecord(auth) {
+		return true
+	}
+	if h != nil && h.authManager != nil && auth != nil && auth.ID != "" {
+		if existing, ok := h.authManager.GetByID(auth.ID); ok && coreauth.IsCodexAuthRecord(existing) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) authFileLoadingManagedByWatcher() bool {
