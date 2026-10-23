@@ -161,6 +161,42 @@ func TestManagerMarkResultKeepsUnauthorizedAuthWhenDeleteDisabled(t *testing.T) 
 	}
 }
 
+func TestManagerMarkResultKeepsRequestScopedUnauthorizedAuthWhenDeleteEnabled(t *testing.T) {
+	SetDeleteUnauthorizedAuth(true)
+	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })
+
+	for _, code := range []string{ErrorCodeRequestScoped, ErrorCodeForceCooldown} {
+		t.Run(code, func(t *testing.T) {
+			store := &deleteTrackingStore{}
+			manager := NewManager(store, nil, nil)
+			auth := &Auth{ID: "request-scoped-401", Provider: "codex", Metadata: map[string]any{"access_token": "valid-token"}}
+			if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			manager.MarkResult(context.Background(), Result{
+				AuthID: auth.ID, Provider: auth.Provider, Model: "gpt-5.5",
+				Error: &Error{Code: code, HTTPStatus: http.StatusUnauthorized, Message: "request rejected"},
+			})
+			got, ok := manager.GetByID(auth.ID)
+			if !ok {
+				t.Fatal("request-scoped 401 deleted the credential")
+			}
+			if got.RejectedAccessToken != "" {
+				t.Fatalf("request-scoped 401 rejected token: %q", got.RejectedAccessToken)
+			}
+			if deleted := store.deleted(); len(deleted) != 0 {
+				t.Fatalf("request-scoped 401 deleted token store credentials: %v", deleted)
+			}
+			if code == ErrorCodeForceCooldown {
+				state := got.ModelStates["gpt-5.5"]
+				if state == nil || !state.Unavailable || !state.NextRetryAfter.After(time.Now()) {
+					t.Fatalf("force cooldown did not cool the model: %+v", state)
+				}
+			}
+		})
+	}
+}
+
 func TestManagerMarkResultDeletesUnauthorizedAuthWhenEnabled(t *testing.T) {
 	SetDeleteUnauthorizedAuth(true)
 	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })

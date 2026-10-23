@@ -151,3 +151,41 @@ func TestReconcileRegistryModelStates_ResetsExpiredQuotaCooldown(t *testing.T) {
 		t.Fatalf("expected expired quota to be reset by reconcile, got %+v", state.Quota)
 	}
 }
+
+func TestReconcileRegistryModelStates_PreservesIndependentAuthCooldown(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		name := "active"
+		if expired {
+			name = "expired"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := WithSkipPersist(context.Background())
+			authID := "independent-auth-cooldown-" + name
+			registerSchedulerModels(t, "codex", "gpt-5.5", authID)
+			m := NewManager(nil, nil, nil)
+			retry := time.Now().Add(time.Hour)
+			if expired {
+				retry = time.Now().Add(-time.Hour)
+			}
+			if _, errRegister := m.Register(ctx, &Auth{
+				ID: authID, Provider: "codex", Unavailable: true, Status: StatusError,
+				NextRetryAfter: retry, LastError: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+				Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: retry},
+			}); errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			m.ReconcileRegistryModelStates(ctx, authID)
+			got, ok := m.GetByID(authID)
+			if !ok {
+				t.Fatal("credential missing after reconciliation")
+			}
+			if expired {
+				if got.Unavailable || got.Quota.Exceeded || !got.NextRetryAfter.IsZero() {
+					t.Fatalf("expired auth cooldown retained after reconciliation: %+v", got)
+				}
+			} else if !got.Unavailable || !got.Quota.Exceeded || !got.NextRetryAfter.Equal(retry) || got.LastError == nil {
+				t.Fatalf("independent auth cooldown cleared by model reconciliation: %+v", got)
+			}
+		})
+	}
+}

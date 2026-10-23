@@ -55,34 +55,6 @@ func getVertexAction(model string, isStream bool) string {
 	return "generateContent"
 }
 
-func isGeminiVertexTerminalStreamChunk(chunk []byte) bool {
-	for _, line := range bytes.Split(chunk, []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		if bytes.Equal(trimmed, []byte("data: [DONE]")) || bytes.Equal(trimmed, []byte("[DONE]")) {
-			return true
-		}
-		payload := helps.JSONPayload(line)
-		if len(payload) == 0 {
-			continue
-		}
-		eventType := gjson.GetBytes(payload, "type").String()
-		if eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.done" || eventType == "message_stop" {
-			return true
-		}
-		for _, path := range []string{
-			"choices.0.finish_reason",
-			"response.choices.0.finish_reason",
-			"candidates.0.finishReason",
-			"response.candidates.0.finishReason",
-		} {
-			if finishReason := gjson.GetBytes(payload, path); finishReason.Exists() && strings.TrimSpace(finishReason.String()) != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // convertImagenToGeminiResponse converts Imagen API response to Gemini format
 // so it can be processed by the standard translation pipeline.
 // This ensures Imagen models return responses in the same format as gemini-3-pro-image-preview.
@@ -269,7 +241,7 @@ func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	if helps.ShouldExecuteVertexOpenAPI(auth, req.Model) {
+	if helps.ShouldExecuteVertexOpenAPIForRequest(e.cfg, auth, req.Model, opts) {
 		return e.executeOpenAPI(ctx, auth, req, opts)
 	}
 	if shouldExecuteVertexInteractions(auth, opts) {
@@ -297,7 +269,7 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	if helps.ShouldExecuteVertexOpenAPI(auth, req.Model) {
+	if helps.ShouldExecuteVertexOpenAPIForRequest(e.cfg, auth, req.Model, opts) {
 		return e.executeOpenAPIStream(ctx, auth, req, opts)
 	}
 	if shouldExecuteVertexInteractions(auth, opts) {
@@ -321,7 +293,7 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 // CountTokens counts tokens for the given request using the Vertex AI API.
 func (e *GeminiVertexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	if helps.ShouldExecuteVertexOpenAPI(auth, req.Model) {
+	if helps.ShouldExecuteVertexOpenAPIForRequest(e.cfg, auth, req.Model, opts) {
 		normalizedReq, normalizedOpts := normalizeVertexOpenAPIRequest(req, opts)
 		return NewOpenAICompatExecutor(e.Identifier(), e.cfg).CountTokens(ctx, auth, normalizedReq, normalizedOpts)
 	}
@@ -361,6 +333,13 @@ func hasVertexServiceAccount(auth *cliproxyauth.Auth) bool {
 	return ok && len(sa) > 0
 }
 
+func (e *GeminiVertexExecutor) vertexOpenAPILocation(auth *cliproxyauth.Auth, defaultLocation string) string {
+	if explicit := helps.VertexExplicitOpenAPILocation(e.cfg, auth); explicit != "" {
+		return explicit
+	}
+	return helps.VertexOpenAPILocation(auth, defaultLocation)
+}
+
 func (e *GeminiVertexExecutor) resolveOpenAPICredentials(ctx context.Context, auth *cliproxyauth.Auth) (string, string, error) {
 	apiKey, baseURL := vertexAPICreds(auth)
 	if apiKey == "" || hasVertexServiceAccount(auth) {
@@ -376,14 +355,21 @@ func (e *GeminiVertexExecutor) resolveOpenAPICredentials(ctx context.Context, au
 		if strings.TrimSpace(token) == "" {
 			return "", "", statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 		}
-		openAPILocation := helps.VertexOpenAPILocation(auth, location)
-		openAPIBaseURL := helps.VertexServiceAccountOpenAPIBaseURL(helps.VertexAuthBaseURL(auth), vertexAPIVersion, projectID, openAPILocation)
+		authBaseURL := helps.VertexAuthBaseURL(auth)
+		openAPILocation := e.vertexOpenAPILocation(auth, location)
+		if strings.Contains(authBaseURL, "/locations/") {
+			openAPILocation = helps.VertexExplicitOpenAPILocation(e.cfg, auth)
+		}
+		openAPIBaseURL := helps.VertexServiceAccountOpenAPIBaseURL(authBaseURL, vertexAPIVersion, projectID, openAPILocation)
 		return openAPIBaseURL, token, nil
 	}
 	if helps.IsGoogleVertexHost(baseURL) {
 		return "", "", statusErr{code: http.StatusBadRequest, msg: "vertex endpoints/openapi on aiplatform.googleapis.com requires service account credentials"}
 	}
-	openAPILocation := helps.VertexOpenAPILocation(auth, "")
+	openAPILocation := helps.VertexExplicitOpenAPILocation(e.cfg, auth)
+	if !strings.Contains(baseURL, "/locations/") && openAPILocation == "" {
+		openAPILocation = e.vertexOpenAPILocation(auth, "")
+	}
 	openAPIBaseURL := helps.VertexAPIKeyOpenAPIBaseURL(baseURL, vertexAPIVersion, helps.VertexAuthProjectID(auth), openAPILocation)
 	return openAPIBaseURL, apiKey, nil
 }
@@ -489,9 +475,9 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
-	reporter.SetTranslatedReasoningEffort(body, "gemini")
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
+	reporter.SetTranslatedReasoningEffort(body, "gemini")
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewReq != nil {
 		return resp, errNewReq
@@ -638,9 +624,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
-	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewReq != nil {
 		return resp, errNewReq
@@ -767,9 +753,9 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		}
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
-	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewReq != nil {
 		return nil, errNewReq
@@ -864,7 +850,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-					if isGeminiVertexTerminalStreamChunk(lines[i]) {
+					if helps.IsGeminiTerminalStreamChunk(lines[i]) {
 						terminalDelivered = true
 					}
 				case <-ctx.Done():
@@ -978,9 +964,9 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		}
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
-	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewReq != nil {
 		return nil, errNewReq
@@ -1072,7 +1058,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-					if isGeminiVertexTerminalStreamChunk(lines[i]) {
+					if helps.IsGeminiTerminalStreamChunk(lines[i]) {
 						terminalDelivered = true
 					}
 				case <-ctx.Done():
@@ -1448,8 +1434,10 @@ func vertexBaseURL(location string) string {
 	loc := strings.TrimSpace(location)
 	if loc == "" {
 		loc = "us-central1"
-	} else if loc == "global" {
+	} else if strings.EqualFold(loc, "global") {
 		return "https://aiplatform.googleapis.com"
+	} else if strings.EqualFold(loc, "us") || strings.EqualFold(loc, "eu") {
+		return fmt.Sprintf("https://aiplatform.%s.rep.googleapis.com", strings.ToLower(loc))
 	}
 	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", loc)
 }
@@ -1475,42 +1463,7 @@ func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyau
 
 // resolveVertexConfig finds the matching vertex-api-key configuration entry for the given auth.
 func (e *GeminiVertexExecutor) resolveVertexConfig(auth *cliproxyauth.Auth) *config.VertexCompatKey {
-	if auth == nil || e.cfg == nil {
-		return nil
-	}
-	var attrKey, attrBase string
-	if auth.Attributes != nil {
-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	for i := range e.cfg.VertexCompatAPIKey {
-		entry := &e.cfg.VertexCompatAPIKey[i]
-		cfgKey := strings.TrimSpace(entry.APIKey)
-		cfgBase := strings.TrimSpace(entry.BaseURL)
-		if attrKey != "" && attrBase != "" {
-			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
-				return entry
-			}
-			continue
-		}
-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
-				return entry
-			}
-		}
-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
-			return entry
-		}
-	}
-	if attrKey != "" {
-		for i := range e.cfg.VertexCompatAPIKey {
-			entry := &e.cfg.VertexCompatAPIKey[i]
-			if strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
-				return entry
-			}
-		}
-	}
-	return nil
+	return helps.ResolveVertexCompatConfig(e.cfg, auth)
 }
 
 // SupportsApplyPatch reports the actual executor contract, independent of its provider name.
@@ -1602,6 +1555,7 @@ func (e *GeminiVertexExecutor) executeInteractions(ctx context.Context, auth *cl
 	url := vertexInteractionsURL(baseURL, projectID, false)
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetTranslatedRequestMetadata(body, "interactions")
 
 	httpReq, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errRequest != nil {
@@ -1731,6 +1685,7 @@ func (e *GeminiVertexExecutor) executeInteractionsStream(ctx context.Context, au
 	url := vertexInteractionsURL(baseURL, projectID, true)
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetTranslatedRequestMetadata(body, "interactions")
 
 	httpReq, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errRequest != nil {

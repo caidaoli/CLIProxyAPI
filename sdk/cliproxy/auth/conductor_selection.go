@@ -346,6 +346,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			}
 
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
+				preserveAuthCooldown := len(auth.ModelStates) == 0 && isAuthActiveCooldown(auth, now)
 				auth.ModelStates = candidateAuth.ModelStates
 				statusBefore := auth.Status
 				statusMessageBefore := auth.StatusMessage
@@ -353,10 +354,12 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				nextRetryBefore := auth.NextRetryAfter
 				quotaBefore := auth.Quota
 				lastErrorBefore := cloneError(auth.LastError)
-				// Recompute credential-level availability even when model states
-				// themselves did not change. Registry re-registration can add a
-				// healthy model and thereby clear stale auth-level cooldown fields.
-				updateAggregatedAvailability(auth, now)
+				// Registry changes can clear stale aggregated availability, but an
+				// active cooldown recorded without model states belongs to the
+				// credential itself and is independent of model registration.
+				if !preserveAuthCooldown {
+					updateAggregatedAvailability(auth, now)
+				}
 				if auth.Status != statusBefore ||
 					auth.StatusMessage != statusMessageBefore ||
 					auth.Unavailable != unavailableBefore ||
@@ -366,7 +369,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					candidateChanged = true
 				}
 				if candidateChanged {
-					if !hasModelError(auth, now) {
+					if !preserveAuthCooldown && !hasModelError(auth, now) {
 						auth.LastError = nil
 						auth.StatusMessage = ""
 						auth.Status = StatusActive

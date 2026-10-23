@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -129,6 +130,34 @@ func TestManagerModifyWaitsForConditionalRemoval(t *testing.T) {
 		}
 		if _, ok := manager.GetByID(auth.ID); ok {
 			t.Fatal("Modify resurrected a removed credential")
+		}
+	})
+}
+
+func TestManagerStaleUnauthorizedResultReleasesLifecycle(t *testing.T) {
+	SetDeleteUnauthorizedAuth(true)
+	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx := WithSkipPersist(context.Background())
+		manager := NewManager(nil, nil, nil)
+		initial, errRegister := manager.Register(ctx, &Auth{ID: "stale-401", Provider: "codex"})
+		if errRegister != nil {
+			t.Fatal(errRegister)
+		}
+		replacement, errReplace := manager.Register(ctx, initial.Clone())
+		if errReplace != nil {
+			t.Fatal(errReplace)
+		}
+		manager.MarkResult(ctx, Result{
+			AuthID: initial.ID, Provider: initial.Provider, RegistrationEpoch: initial.RegistrationEpoch,
+			Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "stale unauthorized"},
+		})
+		if _, errUpdate := manager.Update(ctx, replacement); errUpdate != nil {
+			t.Fatalf("replacement update after stale 401: %v", errUpdate)
+		}
+		if current, ok := manager.GetByID(initial.ID); !ok || current.RegistrationEpoch != replacement.RegistrationEpoch {
+			t.Fatal("stale 401 removed the replacement credential")
 		}
 	})
 }

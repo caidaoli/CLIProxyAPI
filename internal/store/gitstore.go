@@ -1552,7 +1552,20 @@ func rollbackRecoveredGitDirectory(gitDir, backupGitDir string) error {
 }
 
 func isRepositoryCorruptionError(err error) bool {
-	return errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound)
+	if errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
+		return true
+	}
+	// Pack readers can report a missing pack through Stat rather than the
+	// dotgit sentinel. Other missing files must not trigger repository recovery.
+	var pathErr *fs.PathError
+	if !errors.Is(err, fs.ErrNotExist) || !errors.As(err, &pathErr) {
+		return false
+	}
+	packDir := filepath.Dir(pathErr.Path)
+	packName := filepath.Base(pathErr.Path)
+	return filepath.Base(packDir) == "pack" &&
+		filepath.Base(filepath.Dir(packDir)) == "objects" &&
+		strings.HasPrefix(packName, "pack-") && strings.HasSuffix(packName, ".pack")
 }
 
 func verifyRepositoryHead(repo *git.Repository) error {

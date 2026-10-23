@@ -1227,7 +1227,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
-	return s.pickSessionWithRetry(ctx, provider, model, opts, available, available)
+	return s.pickSessionWithRetry(ctx, provider, model, opts, available, available, availabilityCandidates)
 }
 
 // pickWithRetry serves conductor retries. LCP sessions still consult the matcher so a
@@ -1238,10 +1238,10 @@ func (s *SessionAffinitySelector) pickWithRetry(ctx context.Context, provider, m
 			return auth, errLCP
 		}
 	}
-	return s.pickSessionWithRetry(ctx, provider, model, opts, ready, selectable)
+	return s.pickSessionWithRetry(ctx, provider, model, opts, ready, selectable, ready)
 }
 
-func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, ready, selectable []*Auth) (*Auth, error) {
+func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, ready, selectable, bindingCandidates []*Auth) (*Auth, error) {
 	ctx = withWeightedSelectorStateModel(ctx, s.fallback, model)
 	entry := selectorLogEntry(ctx)
 	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
@@ -1279,12 +1279,25 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
-	bind := func(authID string) {
+	bind := func(authID string, recordSelection bool) {
+		keys := []string{cacheKey}
 		if fallbackKey != "" && !isSubagent && !isFork {
-			s.cache.SetAliases(authID, cacheKey, fallbackKey)
-		} else {
-			s.cache.Set(cacheKey, authID)
+			keys = append(keys, fallbackKey)
 		}
+		if !recordSelection {
+			s.cache.SetAliases(authID, keys...)
+			return
+		}
+		bindingProvider := canonicalSchedulingProvider(provider)
+		for _, candidate := range available {
+			if candidate != nil && candidate.ID == authID {
+				if candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate)); candidateProvider != "" {
+					bindingProvider = candidateProvider
+				}
+				break
+			}
+		}
+		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
@@ -1300,7 +1313,7 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 				entry.Infof("session-affinity: cache hit but auth already tried, temporary failover | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), temporary.ID, provider, model)
 				return temporary, nil
 			}
-			bind(auth.ID)
+			bind(auth.ID, true)
 			entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 			return auth, nil
 		}
@@ -1312,20 +1325,43 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 		if auth == nil {
 			return nil, nil
 		}
-		if s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
-			bind(cachedAuthID)
+		if s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, cachedAuthID, now) {
+			bind(cachedAuthID, false)
 			entry.Infof("session-affinity: cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, auth.ID, provider, model)
 			return auth, nil
 		}
-		bind(auth.ID)
+		bind(auth.ID, true)
 		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 		return auth, nil
+	}
+
+	if isSubagent && s.subagentAffinity && isGuardianRequest(opts.Headers) {
+		providers := make(map[string]struct{})
+		schedulingProvider := canonicalSchedulingProvider(provider)
+		for _, candidate := range available {
+			candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+			if candidateProvider == "" {
+				candidateProvider = schedulingProvider
+			}
+			if schedulingProvider == "mixed" || candidateProvider == schedulingProvider {
+				providers[candidateProvider] = struct{}{}
+			}
+		}
+		if parentAuthID := s.cache.latestSessionAuth(fallbackID, providers); parentAuthID != "" {
+			for _, auth := range available {
+				if auth.ID == parentAuthID && authWithID(eligible, parentAuthID) != nil {
+					bind(auth.ID, true)
+					entry.Infof("session-affinity: guardian inherited parent binding | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+					return auth, nil
+				}
+			}
+		}
 	}
 
 	if fallbackKey != "" {
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			if auth := authWithID(eligible, cachedAuthID); auth != nil && authWithID(available, cachedAuthID) != nil && (!isSubagent || s.subagentAffinity) {
-				bind(auth.ID)
+				bind(auth.ID, true)
 				if isFork {
 					entry.Infof("session-affinity: fork cache hit | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 				} else {
@@ -1333,7 +1369,7 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 				}
 				return auth, nil
 			}
-			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
+			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, cachedAuthID, now) {
 				auth, errPick := pickSelectorWithRetry(ctx, s.fallback, provider, model, opts, ready, selectable)
 				if errPick != nil {
 					return nil, errPick
@@ -1341,7 +1377,7 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 				if auth == nil {
 					return nil, nil
 				}
-				bind(cachedAuthID)
+				bind(cachedAuthID, false)
 				entry.Infof("session-affinity: fallback cache hit but auth transiently unavailable, failover without rebinding | session=%s fallback=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, auth.ID, provider, model)
 				return auth, nil
 			}
@@ -1355,7 +1391,7 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 	if auth == nil {
 		return nil, nil
 	}
-	bind(auth.ID)
+	bind(auth.ID, true)
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 	} else {
@@ -1836,6 +1872,16 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if fallbackKey != "" {
 		s.cache.CompareAndDelete(fallbackKey, res.AuthID)
 	}
+}
+
+// isGuardianRequest deliberately matches the header, not the configurable review model.
+func isGuardianRequest(headers http.Header) bool {
+	for key, values := range headers {
+		if strings.EqualFold(key, "X-Openai-Subagent") && len(values) > 0 {
+			return strings.EqualFold(strings.TrimSpace(values[0]), "guardian")
+		}
+	}
+	return false
 }
 
 // normalizedSessionCandidate validates an explicit client-provided session signal.

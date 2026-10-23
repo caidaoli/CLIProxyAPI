@@ -2118,7 +2118,7 @@ func TestInitialAuthLoadStopsOnCancellation(t *testing.T) {
 	}
 }
 
-func TestInitialAuthLoadDirectoryFailureIsDegraded(t *testing.T) {
+func TestInitialAuthLoadMissingDirectoryIsReady(t *testing.T) {
 	authDir := t.TempDir()
 	queue := make(chan AuthUpdateBatch, 1)
 	w := newInitialLoadTestWatcher(t, authDir, queue)
@@ -2128,46 +2128,77 @@ func TestInitialAuthLoadDirectoryFailureIsDegraded(t *testing.T) {
 	done := w.StartInitialAuthLoad(context.Background(), 2)
 	<-done
 	status := w.AuthLoadStatus()
-	if status.State != AuthLoadStateDegraded || !status.ScanComplete || status.FilesDiscovered != 0 {
+	if status.State != AuthLoadStateReady || !status.ScanComplete || status.FilesDiscovered != 0 {
 		t.Fatalf("status = %+v", status)
 	}
 }
 
-func TestFullAuthRescanDirectoryFailurePreservesLoadedAuth(t *testing.T) {
-	authDir := writeInitialLoadAuthFiles(t, 1)
-	queue := make(chan AuthUpdateBatch, 2)
-	w := newInitialLoadTestWatcher(t, authDir, queue)
-	firstDone := w.StartInitialAuthLoad(context.Background(), 1)
-	acknowledgeInitialLoadUntilDone(t, queue, firstDone)
-	if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
-		t.Fatalf("initial auth snapshot = %+v, want one auth", auths)
-	}
-	if errRemove := os.RemoveAll(authDir); errRemove != nil {
-		t.Fatal(errRemove)
-	}
+func TestFullAuthRescanDirectoryReadErrors(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing_%t", missing), func(t *testing.T) {
+			if !missing && (runtime.GOOS == "windows" || os.Geteuid() == 0) {
+				t.Skip("requires Unix file permissions and a non-root user")
+			}
+			authDir := writeInitialLoadAuthFiles(t, 1)
+			if !missing {
+				t.Cleanup(func() { _ = os.Chmod(authDir, 0o700) })
+			}
+			queue := make(chan AuthUpdateBatch, 2)
+			w := newInitialLoadTestWatcher(t, authDir, queue)
+			firstDone := w.StartInitialAuthLoad(context.Background(), 1)
+			acknowledgeInitialLoadUntilDone(t, queue, firstDone)
+			if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
+				t.Fatalf("initial auth snapshot = %+v, want one auth", auths)
+			}
+			if missing {
+				if errRemove := os.RemoveAll(authDir); errRemove != nil {
+					t.Fatal(errRemove)
+				}
+			} else if errChmod := os.Chmod(authDir, 0); errChmod != nil {
+				t.Fatal(errChmod)
+			}
 
-	secondDone := w.StartInitialAuthLoad(context.Background(), 1)
-	var unexpected []AuthUpdate
-	for {
-		select {
-		case batch := <-queue:
-			unexpected = append(unexpected, batch.Updates...)
-			batch.Result <- loadedResults(batch.Updates)
-		case <-secondDone:
-			goto rescanComplete
-		case <-time.After(time.Second):
-			t.Fatal("directory failure rescan did not complete")
-		}
-	}
-rescanComplete:
-	if len(unexpected) != 0 {
-		t.Fatalf("directory failure emitted auth updates: %+v", unexpected)
-	}
-	if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
-		t.Fatalf("directory failure discarded loaded auths: %+v", auths)
-	}
-	if status := w.AuthLoadStatus(); status.State != AuthLoadStateDegraded {
-		t.Fatalf("status = %+v, want degraded", status)
+			secondDone := w.StartInitialAuthLoad(context.Background(), 1)
+			var unexpected []AuthUpdate
+			for {
+				select {
+				case batch := <-queue:
+					unexpected = append(unexpected, batch.Updates...)
+					batch.Result <- loadedResults(batch.Updates)
+				case <-secondDone:
+					goto rescanComplete
+				case <-time.After(time.Second):
+					t.Fatal("directory failure rescan did not complete")
+				}
+			}
+		rescanComplete:
+			if missing {
+				if len(unexpected) != 1 || unexpected[0].ID != "auth-000.json" || unexpected[0].Action != AuthUpdateActionDelete {
+					t.Fatalf("missing directory updates = %+v, want one delete", unexpected)
+				}
+				if auths := w.SnapshotCoreAuths(); len(auths) != 0 {
+					t.Fatalf("missing directory retained auths: %+v", auths)
+				}
+				if status := w.AuthLoadStatus(); status.State != AuthLoadStateReady {
+					t.Fatalf("status = %+v, want ready", status)
+				}
+				return
+			}
+			if len(unexpected) != 0 {
+				t.Fatalf("directory failure emitted auth updates: %+v", unexpected)
+			}
+			if auths := w.SnapshotCoreAuths(); len(auths) != 1 {
+				t.Fatalf("directory failure discarded loaded auths: %+v", auths)
+			}
+			if status := w.AuthLoadStatus(); status.State != AuthLoadStateDegraded {
+				t.Fatalf("status = %+v, want degraded", status)
+			}
+			for path, hash := range w.lastAuthHashes {
+				if hash != "" {
+					t.Fatalf("unreadable directory retained hash for %s: %q", path, hash)
+				}
+			}
+		})
 	}
 }
 

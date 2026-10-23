@@ -197,6 +197,9 @@ func (w *Watcher) enumerateInitialAuthFiles(ctx context.Context, snapshot authLo
 	enumerationStarted := time.Now()
 	entries, errReadDir := os.ReadDir(snapshot.authDir)
 	if errReadDir != nil {
+		if errors.Is(errReadDir, fs.ErrNotExist) {
+			errReadDir = nil
+		}
 		w.sendInitialAuthResult(ctx, results, initialAuthReadResult{enumerationResult: true, err: errReadDir, enumerationTime: time.Since(enumerationStarted)})
 		return
 	}
@@ -359,6 +362,19 @@ func (w *Watcher) aggregateInitialAuthResults(ctx context.Context, sequence uint
 				metrics.directoryEnumeration += result.enumerationTime
 				if result.err != nil {
 					enumerationFailed = true
+					if !w.withActiveAuthLoadScan(ctx, sequence, func() {
+						w.clientsMutex.Lock()
+						defer w.clientsMutex.Unlock()
+						for path, generation := range baseline {
+							if w.pathGenerationCurrentLocked(path, generation) {
+								if _, known := w.lastAuthHashes[path]; known {
+									w.lastAuthHashes[path] = ""
+								}
+							}
+						}
+					}) {
+						return
+					}
 				}
 				if !w.publishAuthLoadStatusForScan(ctx, sequence, status) {
 					return
@@ -403,6 +419,21 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 	pathByID := make(map[string]string)
 	unchanged := make(map[string]int64)
 	failedPaths := make(map[string]struct{})
+	rereadPaths := make(map[string]string)
+	pathGenerationCurrent := func(result *initialAuthReadResult) bool {
+		if w.pathGenerationCurrentLocked(result.normalized, result.generation) {
+			return true
+		}
+		// A persisted update has no file snapshot. Re-read it with the current
+		// parser/config so the skipped scan cannot lose derived auth settings.
+		for id := range w.fileAuthsByPath[result.normalized] {
+			if auth := w.currentAuths[id]; auth != nil && !auth.HasFileSnapshot() {
+				rereadPaths[result.normalized] = result.path
+				break
+			}
+		}
+		return false
+	}
 	for i := range results {
 		if !w.authLoadScanActive(ctx, sequence) {
 			return false
@@ -430,7 +461,7 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 		generationCurrent := false
 		if !w.withActiveAuthLoadScan(ctx, sequence, func() {
 			w.clientsMutex.Lock()
-			generationCurrent = w.pathGenerationCurrentLocked(result.normalized, result.generation)
+			generationCurrent = pathGenerationCurrent(result)
 			w.clientsMutex.Unlock()
 		}) {
 			return false
@@ -458,7 +489,7 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 		if !w.withActiveAuthLoadScan(ctx, sequence, func() {
 			w.clientsMutex.Lock()
 			defer w.clientsMutex.Unlock()
-			generationCurrent = w.pathGenerationCurrentLocked(result.normalized, result.generation)
+			generationCurrent = pathGenerationCurrent(result)
 			if !generationCurrent {
 				return
 			}
@@ -524,6 +555,15 @@ func (w *Watcher) commitInitialAuthResults(ctx context.Context, sequence uint64,
 		failedPaths[pathByID[update.ID]] = struct{}{}
 	}
 	status.FilesFailed += int64(len(failedPaths))
+	for _, path := range rereadPaths {
+		if !w.authLoadScanActive(ctx, sequence) {
+			return false
+		}
+		w.clientsMutex.Lock()
+		w.invalidateAuthFileHashLocked(path)
+		w.clientsMutex.Unlock()
+		w.addOrUpdateClient(path)
+	}
 	return true
 }
 
