@@ -112,6 +112,14 @@ type Capabilities struct {
 	ResponseAfterTranslator ResponseNormalizer
 	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
+	// RequestInterceptorOmitBodyBefore opts out of receiving RequestInterceptRequest.Body
+	// in InterceptRequestBeforeAuth. It is honored only on schema version 7+; the plugin
+	// may still replace the body blindly via RequestInterceptResponse.Body.
+	RequestInterceptorOmitBodyBefore bool
+	// RequestInterceptorOmitBodyAfter opts out of receiving RequestInterceptRequest.Body
+	// in InterceptRequestAfterAuth. It is honored only on schema version 7+; the plugin
+	// may still replace the body blindly via RequestInterceptResponse.Body.
+	RequestInterceptorOmitBodyAfter bool
 	// RequestLifecyclePlugin asynchronously receives one terminal event for each request that reached request interception.
 	RequestLifecyclePlugin RequestLifecyclePlugin
 	// ResponseInterceptor rewrites successful non-streaming HTTP execution responses before downstream delivery.
@@ -484,6 +492,8 @@ const (
 	SchedulerBuiltinRoundRobin = "round-robin"
 	// SchedulerBuiltinFillFirst delegates auth selection to the built-in fill-first scheduler.
 	SchedulerBuiltinFillFirst = "fill-first"
+	// SelectionIDMetadataKey is the metadata key carrying the per-selection identifier in SchedulerOptions.Metadata.
+	SelectionIDMetadataKey = "selection_id"
 )
 
 // Scheduler chooses an auth candidate before the built-in scheduler runs.
@@ -1537,6 +1547,8 @@ type UsageRecord struct {
 	RequestID string
 	// TraceID identifies the parent inbound HTTP request when available (8-character hex).
 	TraceID string
+	// SelectionID identifies the scheduler selection decision that produced this usage record when available.
+	SelectionID string
 	// Provider identifies the upstream provider.
 	Provider string
 	// BaseURL is the upstream base URL configured for the request/credential when available.
