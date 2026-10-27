@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -478,25 +477,6 @@ func BenchmarkListAuthFilesPaginated1037(b *testing.B) {
 		responseBytes = recorder.Body.Len()
 	}
 	b.ReportMetric(float64(responseBytes), "response_B")
-}
-
-func BenchmarkListAuthFilesPaginated1037Gzip(b *testing.B) {
-	h := benchmarkAuthFileListHandler(b)
-	engine := gin.New()
-	engine.Use(middleware.V0ResponseCompressionMiddleware())
-	engine.GET("/v0/management/auth-files", h.ListAuthFiles)
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?page=1&page_size=12", nil)
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	compressedResponseBytes := 0
-	for i := 0; i < b.N; i++ {
-		recorder := httptest.NewRecorder()
-		engine.ServeHTTP(recorder, req.Clone(context.Background()))
-		compressedResponseBytes = recorder.Body.Len()
-	}
-	b.ReportMetric(float64(compressedResponseBytes), "compressed_response_B")
 }
 
 func authFileListTestAuths() []*coreauth.Auth {

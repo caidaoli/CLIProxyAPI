@@ -25,7 +25,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 
 ```
 Client → Gin HTTP Server (internal/api/server.go)
-       → Middleware 栈 (logging → compression → CORS → heartbeat → safe-mode)
+       → Middleware 栈 (logging → CORS → compression → heartbeat → safe-mode)
        → Route Handler (chat/responses/images/videos/management)
        → Translator (internal/translator/ — 请求/响应跨格式转换)
        → Auth Selector (sdk/cliproxy/auth/conductor.go — 凭证编排)
@@ -182,14 +182,13 @@ Modified:
 - `sdk/cliproxy/builder.go` — usage persistence builder option
 - `sdk/cliproxy/service.go`（+`service_usage_persistence_test.go`）— store 生命周期 init/close
 
-### 2. Management Center, Auth Files & Response Compression
+### 2. Management Center & Auth Files
 
 Fork-only:
 - `internal/api/handlers/management/monitor.go`、`monitor_provider_map.go`（+tests）— 13 个 monitor 端点：dashboard、provider-map、request-logs、channel-stats、failure-analysis、kpi、model-distribution、daily-trend、hourly-models、hourly-tokens、service-health、key-stats、request-details
 - `internal/api/handlers/management/auth_files_list.go`（+tests）— auth 文件服务端分页、过滤与排序
 - `internal/api/handlers/management/auth_files_sub2api.go` — sub2api 凭证导入
 - `internal/api/handlers/management/panel.go`（+tests）— panel latest/version 与手动更新 API
-- `internal/api/middleware/response_compression.go`（+tests）— `/v0` 响应压缩
 
 Modified:
 - `internal/api/handlers/management/auth_files.go`（+tests）— 大批量处理、字段批量 patch、`.txt`/zip/tar/tar.gz 上传、过滤删除、symlink/path traversal 防护、delete-all 流式处理，并通过 watcher 同步运行态
