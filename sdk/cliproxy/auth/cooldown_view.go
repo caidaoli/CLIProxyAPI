@@ -137,6 +137,8 @@ func cooldownErrorReason(err *Error) string {
 		return "cloudflare_challenge"
 	case isInvalidGrantResultError(err):
 		return "invalid_grant"
+	case isTransientRateLimitResultError(err):
+		return "transient_rate_limit"
 	}
 	switch statusCodeFromResult(err) {
 	case 401:
@@ -170,6 +172,8 @@ func cooldownStatusReason(message string) string {
 		return "model_not_supported"
 	case "transient upstream error":
 		return "transient_error"
+	case transientRateLimitErrorCode:
+		return "transient_rate_limit"
 	default:
 		return "unknown"
 	}
