@@ -226,12 +226,14 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 		)
 		if err == nil {
 			w.streamWriter = streamWriter
-			w.chunkChannel = make(chan []byte, 100) // Buffered channel for async writes
+			chunkChan := make(chan []byte, 100) // Buffered channel for async writes
+			w.chunkChannel = chunkChan
 			doneChan := make(chan struct{})
 			w.streamDone = doneChan
 
-			// Start async chunk processor
-			go w.processStreamingChunks(doneChan)
+			// Start async chunk processor. It owns its own references because
+			// Finalize clears the wrapper fields while the goroutine may still run.
+			go processStreamingChunks(streamWriter, chunkChan, doneChan)
 
 			// Write status immediately
 			_ = streamWriter.WriteStatus(statusCode, w.headers)
@@ -316,21 +318,21 @@ func (w *ResponseWriterWrapper) currentCapturedRequestBody() []byte {
 	return w.requestInfo.Body
 }
 
-// processStreamingChunks runs in a separate goroutine to process response chunks from the chunkChannel.
+// processStreamingChunks runs in a separate goroutine to process response chunks from chunks.
 // It asynchronously writes each chunk to the streaming log writer.
-func (w *ResponseWriterWrapper) processStreamingChunks(done chan struct{}) {
+func processStreamingChunks(streamWriter logging.StreamingLogWriter, chunks <-chan []byte, done chan struct{}) {
 	if done == nil {
 		return
 	}
 
 	defer close(done)
 
-	if w.streamWriter == nil || w.chunkChannel == nil {
+	if streamWriter == nil || chunks == nil {
 		return
 	}
 
-	for chunk := range w.chunkChannel {
-		w.streamWriter.WriteChunkAsync(chunk)
+	for chunk := range chunks {
+		streamWriter.WriteChunkAsync(chunk)
 	}
 }
 

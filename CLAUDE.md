@@ -263,9 +263,10 @@ Modified:
   - `utlsH2DegradeCache` 按 `scope+host`（scope=`direct`/`proxy:<redacted>`）缓存 response-less h2 transport error；初始 2m，指数退避封顶 30m；任意 h2 response 立即重置；注入 transport 或非 protected host 不缓存。
   - `roundTripProtected` 必须用 `sentAttempts` 而非循环下标；跳过 h2 时 HTTP/1.1 是首次实际发送，不要求 `GetBody`。
 
-### 8. Utilities
+### 8. Utilities & Upstream Fixes
 
 - `internal/util/util.go` — `GetEnvTrimmed(keys...)`：按顺序读取并 trim 首个非空环境变量
+- `internal/api/middleware/response_writer.go` — streaming 日志 goroutine 持有自己的 writer/channel 引用，修复 `Finalize` 清空字段导致的 data race；上游修复后改取上游
 
 ### 9. CI/CD, Build & Dependencies
 
