@@ -630,6 +630,10 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	if c != nil && c.Request != nil {
 		sessionID, parentSessionID := extractSessionIDsFromRequest(c.Request)
+		requestPath := ""
+		if c.Request.URL != nil {
+			requestPath = c.Request.URL.Path
+		}
 		newCtx = logging.WithClientRequestMetadata(newCtx, logging.ClientRequestMetadata{
 			ClientIP:         requestClientIP(c.Request),
 			ResolvedClientIP: strings.TrimSpace(c.ClientIP()),
@@ -637,6 +641,8 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			UserAgent:        strings.TrimSpace(c.Request.UserAgent()),
 			SessionID:        sessionID,
 			ParentSessionID:  parentSessionID,
+			Method:           c.Request.Method,
+			Path:             requestPath,
 		})
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)

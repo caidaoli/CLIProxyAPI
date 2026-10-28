@@ -23,6 +23,9 @@ type ClientRequestMetadata struct {
 	NodeKind         string
 	IsFork           bool
 	IsCompaction     bool
+	// Method and Path snapshot the downstream request line (raw URL path, not the route pattern).
+	Method string
+	Path   string
 }
 
 type responseStatusHolder struct {

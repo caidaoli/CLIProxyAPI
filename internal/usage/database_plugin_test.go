@@ -2,9 +2,11 @@ package usage
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -125,6 +127,26 @@ func TestDatabasePluginBuffersCacheWriteTokens(t *testing.T) {
 	}
 	if plugin.buffer[0].CacheWriteTokens != 40 {
 		t.Fatalf("cache write tokens = %d, want 40", plugin.buffer[0].CacheWriteTokens)
+	}
+}
+
+func TestDatabasePluginUsesRequestSnapshotNotGinContext(t *testing.T) {
+	ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{
+		Method: http.MethodPost,
+		Path:   "/v1beta/models/gemini-2.5-pro:generateContent",
+	})
+	ctx = withReusedGinContext(ctx)
+
+	plugin := &DatabasePlugin{store: &fakeUsageStore{}}
+	plugin.HandleUsage(ctx, coreusage.Record{Model: "gemini-2.5-pro"})
+
+	plugin.bufferMu.Lock()
+	defer plugin.bufferMu.Unlock()
+	if len(plugin.buffer) != 1 {
+		t.Fatalf("buffer len = %d, want 1", len(plugin.buffer))
+	}
+	if got := plugin.buffer[0]; got.Method != http.MethodPost || got.Path != "/v1beta/models/gemini-2.5-pro:generateContent" {
+		t.Fatalf("method/path = %q %q, want snapshot request line", got.Method, got.Path)
 	}
 }
 

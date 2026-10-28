@@ -2,11 +2,45 @@ package usage
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+// withReusedGinContext attaches a gin.Context that already serves a different
+// request, as happens when gin recycles it before async usage handling runs.
+func withReusedGinContext(ctx context.Context) context.Context {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	return context.WithValue(ctx, "gin", ginCtx)
+}
+
+func TestRequestStatisticsRecordUsesRequestSnapshotNotGinContext(t *testing.T) {
+	ctx := internallogging.WithEndpoint(context.Background(), "POST /v1/chat/completions")
+	ctx = internallogging.WithResponseStatusHolder(ctx)
+	internallogging.SetResponseStatus(ctx, http.StatusBadGateway)
+	ctx = withReusedGinContext(ctx)
+
+	stats := NewRequestStatistics()
+	stats.Record(ctx, coreusage.Record{
+		Model:       "gpt-5.6",
+		RequestedAt: time.Date(2026, 10, 28, 8, 0, 0, 0, time.UTC),
+	})
+
+	snapshot := stats.Snapshot()
+	if _, ok := snapshot.APIs["POST /v1/chat/completions"]; !ok {
+		t.Fatalf("api keys = %v, want snapshot endpoint", snapshot.APIs)
+	}
+	if snapshot.FailureCount != 1 || snapshot.SuccessCount != 0 {
+		t.Fatalf("success/failure = %d/%d, want 0/1 from snapshot status", snapshot.SuccessCount, snapshot.FailureCount)
+	}
+}
 
 func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	stats := NewRequestStatistics()

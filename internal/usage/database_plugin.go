@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -278,18 +278,6 @@ func (p *DatabasePlugin) triggerFlush() {
 	}
 }
 
-// ginMethodPath extracts the HTTP method and path from a gin.Context stored in ctx.
-func ginMethodPath(ctx context.Context) (string, string) {
-	if ctx == nil {
-		return "", ""
-	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
-	if !ok || ginCtx == nil || ginCtx.Request == nil {
-		return "", ""
-	}
-	return ginCtx.Request.Method, ginCtx.Request.URL.Path
-}
-
 // HandleUsage implements coreusage.Plugin interface.
 // It buffers the usage record and flushes to database when buffer is full or on interval.
 func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Record) {
@@ -297,7 +285,10 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 		return
 	}
 
-	method, path := ginMethodPath(ctx)
+	// Usage is dispatched asynchronously; gin may already have reused the request's
+	// gin.Context, so read the snapshot captured while the handler was active.
+	requestMeta := internallogging.GetClientRequestMetadata(ctx)
+	method, path := requestMeta.Method, requestMeta.Path
 	stream := record.Stream
 	if !stream {
 		stream = coreusage.StreamFromContext(ctx)

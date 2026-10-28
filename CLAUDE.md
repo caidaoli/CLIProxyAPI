@@ -181,6 +181,10 @@ Modified:
 - `internal/config/config.go` — `usage-persistence-enabled`
 - `sdk/cliproxy/builder.go` — usage persistence builder option
 - `sdk/cliproxy/service.go`（+`service_usage_persistence_test.go`）— store 生命周期 init/close
+- `internal/logging/requestmeta.go`、`sdk/api/handlers/handlers.go`（+`handlers_metadata_test.go`）— `ClientRequestMetadata.Method/Path` 快照原始请求行，供 database plugin 写入 `method`/`path` 列
+
+合并保护:
+- `HandleUsage` 异步执行，gin 可能已复用 `gin.Context`；usage 插件只能读请求快照（`GetClientRequestMetadata`、`GetEndpoint`、`GetResponseStatus`），不得恢复 `ctx.Value("gin")`。
 
 ### 2. Management Center & Auth Files
 

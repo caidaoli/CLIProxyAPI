@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -503,24 +503,11 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	)
 }
 
+// Usage records are handled asynchronously after gin may have reused the request's
+// gin.Context, so request details come from snapshots captured by the handler.
 func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
-	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
-			path := ginCtx.FullPath()
-			if path == "" && ginCtx.Request != nil {
-				path = ginCtx.Request.URL.Path
-			}
-			method := ""
-			if ginCtx.Request != nil {
-				method = ginCtx.Request.Method
-			}
-			if path != "" {
-				if method != "" {
-					return method + " " + path
-				}
-				return path
-			}
-		}
+	if endpoint := strings.TrimSpace(internallogging.GetEndpoint(ctx)); endpoint != "" {
+		return endpoint
 	}
 	if record.Provider != "" {
 		return record.Provider
@@ -529,14 +516,7 @@ func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
 }
 
 func resolveSuccess(ctx context.Context) bool {
-	if ctx == nil {
-		return true
-	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
-	if !ok || ginCtx == nil {
-		return true
-	}
-	status := ginCtx.Writer.Status()
+	status := internallogging.GetResponseStatus(ctx)
 	if status == 0 {
 		return true
 	}

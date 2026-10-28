@@ -40,6 +40,9 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
 	if metadata.UserAgent != "test-client/1.0" {
 		t.Fatalf("UserAgent = %q", metadata.UserAgent)
 	}
+	if metadata.Method != http.MethodPost || metadata.Path != "/v1/chat/completions" {
+		t.Fatalf("Method/Path = %q %q, want POST /v1/chat/completions", metadata.Method, metadata.Path)
+	}
 }
 
 func TestGetContextWithCancelCapturesResolvedClientIP(t *testing.T) {
