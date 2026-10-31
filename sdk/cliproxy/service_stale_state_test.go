@@ -357,6 +357,7 @@ func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {
 		UsageStatisticsEnabled: false,
 		DisableCooling:         false,
 		SaveCooldownStatus:     true,
+		WebsocketAuth:          false,
 	}
 
 	forceHomeRuntimeConfig(cfg)
@@ -369,6 +370,9 @@ func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {
 	}
 	if cfg.SaveCooldownStatus {
 		t.Fatal("expected home runtime config to force cooldown status persistence disabled")
+	}
+	if !cfg.WebsocketAuth {
+		t.Fatal("expected home runtime config to force websocket authentication enabled")
 	}
 }
 

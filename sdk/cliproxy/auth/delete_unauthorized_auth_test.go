@@ -570,6 +570,64 @@ func TestManagerAutoRefreshDeletesUnauthorizedWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestManagerAutoRefreshDeletesRejectedGrantAtAccessTokenExpiry(t *testing.T) {
+	SetDeleteUnauthorizedAuth(true)
+	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })
+
+	for _, status := range []int{http.StatusUnauthorized, http.StatusBadRequest} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			store := newBlockingDeleteStore()
+			close(store.allowDelete)
+			manager := NewManager(store, nil, nil)
+			executor := &oauthRefreshFailureExecutor{
+				schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "codex"},
+				err:                           &refreshOAuthError{status: status, code: "refresh_token_expired", message: "refresh_token_expired"},
+			}
+			manager.RegisterExecutor(executor)
+			auth := &Auth{
+				ID:       "rejected-grant-expiry",
+				Provider: "codex",
+				Status:   StatusActive,
+				Metadata: map[string]any{
+					"access_token":  "still-valid-token",
+					"refresh_token": "expired-refresh-token",
+					"expired":       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				},
+			}
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("Register: %v", errRegister)
+			}
+			if _, errRefresh := manager.ForceRefreshAuth(context.Background(), auth.ID); errRefresh == nil {
+				t.Fatal("ForceRefreshAuth succeeded, want terminal refresh error")
+			}
+			retained, ok := manager.GetByID(auth.ID)
+			if !ok || retained.Unavailable || !retained.RequiresSignIn {
+				t.Fatalf("auth after terminal refresh = %#v, want active credential requiring sign-in", retained)
+			}
+			if _, _, errModify := manager.Modify(context.Background(), auth.ID, 0, func(current *Auth) error {
+				current.Metadata["expired"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+				current.NextRefreshAfter = time.Now().Add(-time.Second)
+				return nil
+			}); errModify != nil {
+				t.Fatalf("expire access token: %v", errModify)
+			}
+			manager.StartAutoRefresh(context.Background(), time.Millisecond)
+			t.Cleanup(manager.StopAutoRefresh)
+			select {
+			case <-store.deleteStarted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("expired credential with rejected refresh grant was not deleted")
+			}
+			if _, ok := manager.GetByID(auth.ID); ok {
+				t.Fatal("expired credential remained registered")
+			}
+			if got := executor.calls.Load(); got != 1 {
+				t.Fatalf("Refresh calls = %d, want no repeat of rejected grant after first call", got)
+			}
+		})
+	}
+}
+
 func TestManagerAutoRefreshKeepsXAIUnauthorizedWithUpstreamLifecycle(t *testing.T) {
 	SetDeleteUnauthorizedAuth(true)
 	t.Cleanup(func() { SetDeleteUnauthorizedAuth(false) })
