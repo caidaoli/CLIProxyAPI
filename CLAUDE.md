@@ -8,7 +8,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.10
-- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.48
+- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.49
 - Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · uTLS protected-host 降级
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
@@ -167,7 +167,7 @@ go test -count=1 ./internal/usage/                         # 禁用缓存
 
 ## Fork-Specific Modifications (Upstream Merge Protection)
 
-> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.48）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
+> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.49）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
 
 ### 1. Usage Persistence & SQLite Store
 
@@ -214,6 +214,7 @@ Modified:
 
 合并保护:
 - 凭证删除/替换必须串行完成并同步 token store、watcher 与调度器状态；多 provider 清理按类型执行。
+- `Manager.RemoveIf` 保留四参数和 `(bool, error)` 契约；`matches` 可接收 nil，仅明确接受 nil 时才执行 `beforeRemove(nil)`，用于注册前的插件登录回滚。外部删除失败不得删除运行态记录。
 - 续期终态失败时保留仍有效的 access token；已拒绝 refresh grant 的过期快捷路径仍须执行 `delete-unauthorized-auth` 策略，删除前重验凭证代次、版本与 grant。
 - `save-cooldown-status` 关闭时不得残留运行态或持久化冷却；开启时文件/PG 后端均须在启动时恢复。
 

@@ -567,6 +567,66 @@ func TestFixCLIToolResponse_MoreResponsesThanCalls(t *testing.T) {
 	}
 }
 
+func TestFixCLIToolResponse_MoreResponsesThanCallsDoesNotCorruptNextTurn(t *testing.T) {
+	input := `{
+		"model": "gemini-3.8-flash",
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "Inspect the project structure"}]
+				},
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"id": "call_210083", "name": "glob", "args": {"pattern": "src/**"}}},
+						{"functionCall": {"id": "call_210092", "name": "grep_search", "args": {"query": "header"}}},
+						{"functionCall": {"id": "call_210101", "name": "web_fetch", "args": {"url": "https://example.com"}}}
+					]
+				},
+				{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"id": "call_210083", "name": "glob", "response": {"output": "a"}}},
+						{"functionResponse": {"id": "call_210092", "name": "grep_search", "response": {"output": "b"}}},
+						{"functionResponse": {"id": "call_210101", "name": "web_fetch", "response": {"output": "c"}}},
+						{"functionResponse": {"id": "call_203720", "name": "glob", "response": {"output": "orphan"}}}
+					]
+				},
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"id": "call_153280", "name": "glob", "args": {"pattern": "src/components/**"}}},
+						{"functionCall": {"id": "call_153283", "name": "glob", "args": {"pattern": "src/i18n/**"}}}
+					]
+				},
+				{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"id": "call_153280", "name": "glob", "response": {"output": "d"}}},
+						{"functionResponse": {"id": "call_153283", "name": "glob", "response": {"output": "e"}}}
+					]
+				}
+			]
+		}
+	}`
+
+	result, err := fixCLIToolResponse([]byte(input))
+	if err != nil {
+		t.Fatalf("fixCLIToolResponse failed: %v", err)
+	}
+
+	if errValidate := signature.ValidateGeminiFunctionCallPairing(result); errValidate != nil {
+		t.Fatalf("expected valid function call pairing after fixCLIToolResponse, got error: %v\noutput: %s", errValidate, result)
+	}
+
+	gotID0 := gjson.GetBytes(result, "request.contents.4.parts.0.functionResponse.id").String()
+	gotID1 := gjson.GetBytes(result, "request.contents.4.parts.1.functionResponse.id").String()
+	if gotID0 != "call_153280" || gotID1 != "call_153283" {
+		t.Fatalf("contents[4] response IDs = [%q, %q], want [call_153280, call_153283]", gotID0, gotID1)
+	}
+}
+
 func TestFixCLIToolResponse_MultipleGroupsFIFO(t *testing.T) {
 	// Two sequential function call groups should be matched FIFO.
 	input := `{
@@ -1264,5 +1324,77 @@ func TestConvertGeminiRequestToAntigravity_PreservesExistingResponseSchema(t *te
 	}
 	if gjson.GetBytes(out, "request.generationConfig.responseJsonSchema").Exists() {
 		t.Fatalf("request.generationConfig.responseJsonSchema should have been removed. Output: %s", out)
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_RemovesEmptySystemInstructionParts(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputJSON string
+		wantParts []string
+		wantRole  string
+	}{
+		{
+			name: "camelCase systemInstruction with single empty part removes systemInstruction",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"systemInstruction": {"parts": [{}]},
+				"generationConfig": {"temperature": 1}
+			}`,
+		},
+		{
+			name: "snake_case system_instruction with single empty part removes systemInstruction",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"system_instruction": {"parts": [{}]},
+				"generationConfig": {"temperature": 1}
+			}`,
+		},
+		{
+			name: "mixed empty and non-empty parts preserves valid parts and role",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"systemInstruction": {
+					"role": "user",
+					"parts": [{}, {"text": "Be concise"}, {}]
+				}
+			}`,
+			wantParts: []string{"Be concise"},
+			wantRole:  "user",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash", []byte(tt.inputJSON), true)
+			if err != nil {
+				t.Fatalf("ConvertGeminiRequestToAntigravity returned error: %v", err)
+			}
+			if gjson.GetBytes(out, "request.system_instruction").Exists() {
+				t.Fatalf("request.system_instruction should not exist. Output: %s", out)
+			}
+			sys := gjson.GetBytes(out, "request.systemInstruction")
+			if len(tt.wantParts) == 0 {
+				if sys.Exists() {
+					t.Fatalf("request.systemInstruction should be removed when all parts are empty, got: %s", sys.Raw)
+				}
+				return
+			}
+			if !sys.Exists() {
+				t.Fatalf("request.systemInstruction should exist. Output: %s", out)
+			}
+			if gotRole := sys.Get("role").String(); gotRole != tt.wantRole {
+				t.Fatalf("request.systemInstruction.role = %q, want %q. Output: %s", gotRole, tt.wantRole, out)
+			}
+			parts := sys.Get("parts").Array()
+			if len(parts) != len(tt.wantParts) {
+				t.Fatalf("len(request.systemInstruction.parts) = %d, want %d. Output: %s", len(parts), len(tt.wantParts), out)
+			}
+			for i, wantText := range tt.wantParts {
+				if gotText := parts[i].Get("text").String(); gotText != wantText {
+					t.Fatalf("request.systemInstruction.parts[%d].text = %q, want %q. Output: %s", i, gotText, wantText, out)
+				}
+			}
+		})
 	}
 }

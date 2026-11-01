@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -160,4 +161,100 @@ func TestManagerStaleUnauthorizedResultReleasesLifecycle(t *testing.T) {
 			t.Fatal("stale 401 removed the replacement credential")
 		}
 	})
+}
+
+func TestManagerRemoveIfMissingAuth(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		matches  func(*Auth) bool
+		wantCall bool
+	}{
+		{name: "default rejects missing"},
+		{name: "predicate rejects missing", matches: func(current *Auth) bool { return current != nil }},
+		{name: "predicate accepts missing", matches: func(current *Auth) bool { return current == nil }, wantCall: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewManager(nil, nil, nil)
+			called := false
+			removed, errRemove := manager.RemoveIf(context.Background(), "missing", tc.matches, func(current *Auth) error {
+				called = true
+				if current != nil {
+					t.Fatal("missing credential callback received a non-nil snapshot")
+				}
+				return nil
+			})
+			if errRemove != nil || removed || called != tc.wantCall {
+				t.Fatalf("RemoveIf = (%v, %v), callback=%v; want false, nil, callback=%v", removed, errRemove, called, tc.wantCall)
+			}
+		})
+	}
+}
+
+func TestManagerRemoveIfExternalFailurePreservesRuntime(t *testing.T) {
+	ctx := WithSkipPersist(context.Background())
+	manager := NewManager(nil, nil, nil)
+	auth, errRegister := manager.Register(ctx, &Auth{ID: "delete-fails", Provider: "audit"})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	deleteErr := errors.New("external deletion failed")
+	removed, errRemove := manager.RemoveIf(ctx, auth.ID, nil, func(*Auth) error { return deleteErr })
+	if removed || !errors.Is(errRemove, deleteErr) {
+		t.Fatalf("RemoveIf = (%v, %v), want false and external error", removed, errRemove)
+	}
+	if current, ok := manager.GetByID(auth.ID); !ok || current.RegistrationEpoch != auth.RegistrationEpoch {
+		t.Fatal("failed external deletion changed the runtime credential")
+	}
+}
+
+func TestManagerConditionalRollbackBlocksRegistration(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%v", exists), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := WithSkipPersist(context.Background())
+				manager := NewManager(nil, nil, nil)
+				if exists {
+					if _, errRegister := manager.Register(ctx, &Auth{ID: "pending", Provider: "audit"}); errRegister != nil {
+						t.Fatal(errRegister)
+					}
+				}
+				entered := make(chan struct{})
+				allowRollback := make(chan struct{})
+				rolledBack := make(chan error, 1)
+				go func() {
+					removed, errRemove := manager.RemoveIf(ctx, "pending", func(current *Auth) bool { return (current != nil) == exists }, func(*Auth) error {
+						close(entered)
+						<-allowRollback
+						return nil
+					})
+					if removed != exists && errRemove == nil {
+						errRemove = fmt.Errorf("removed=%v, want %v", removed, exists)
+					}
+					rolledBack <- errRemove
+				}()
+				<-entered
+				registered := make(chan error, 1)
+				go func() {
+					_, errRegister := manager.Register(ctx, &Auth{ID: "pending", Provider: "audit", Label: "replacement"})
+					registered <- errRegister
+				}()
+				synctest.Wait()
+				select {
+				case <-registered:
+					t.Fatal("registration completed before external rollback")
+				default:
+				}
+				close(allowRollback)
+				if errRollback := <-rolledBack; errRollback != nil {
+					t.Fatal(errRollback)
+				}
+				if errRegister := <-registered; errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				if current, ok := manager.GetByID("pending"); !ok || current.Label != "replacement" {
+					t.Fatal("rollback removed the later registration")
+				}
+			})
+		})
+	}
 }

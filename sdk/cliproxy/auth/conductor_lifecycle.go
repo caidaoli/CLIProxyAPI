@@ -704,7 +704,10 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 }
 
 // RemoveIf deletes the current auth only when matches accepts the lifecycle-locked snapshot.
+// matches may receive nil when the auth is absent. Only a non-nil matches that accepts
+// nil allows beforeRemove(nil), supporting external rollback before runtime registration.
 // beforeRemove runs under the same lifecycle lock and must complete any external deletion first.
+// The returned bool reports whether an existing runtime auth was removed.
 func (m *Manager) RemoveIf(ctx context.Context, id string, matches func(*Auth) bool, beforeRemove func(*Auth) error) (bool, error) {
 	if m == nil {
 		return false, nil
@@ -723,13 +726,16 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, matches func(*Auth) b
 		current = current.Clone()
 	}
 	m.mu.RUnlock()
-	if current == nil || (matches != nil && !matches(current)) {
+	if (current == nil && matches == nil) || (matches != nil && !matches(current)) {
 		return false, nil
 	}
 	if beforeRemove != nil {
 		if errRemove := beforeRemove(current.Clone()); errRemove != nil {
 			return false, errRemove
 		}
+	}
+	if current == nil {
+		return false, nil
 	}
 	m.removeRuntime(ctx, id)
 	return true, nil
