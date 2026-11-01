@@ -8,7 +8,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.10
-- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.49
+- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.51
 - Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · uTLS protected-host 降级
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
@@ -167,7 +167,7 @@ go test -count=1 ./internal/usage/                         # 禁用缓存
 
 ## Fork-Specific Modifications (Upstream Merge Protection)
 
-> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.49）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
+> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.51）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
 
 ### 1. Usage Persistence & SQLite Store
 
@@ -268,6 +268,7 @@ Modified:
   - 不得套用“所有 fallback upstream 强制 HTTP/1.1”；普通非 protected host 保留默认 HTTP/2，只有第三段 `protectedFallbackHTTP11` 使用 standard HTTP/1.1。
   - `utlsH2DegradeCache` 按 `scope+host`（scope=`direct`/`proxy:<redacted>`）缓存 response-less h2 transport error；初始 2m，指数退避封顶 30m；任意 h2 response 立即重置；注入 transport 或非 protected host 不缓存。
   - `roundTripProtected` 必须用 `sentAttempts` 而非循环下标；跳过 h2 时 HTTP/1.1 是首次实际发送，不要求 `GetBody`。
+  - Per-key connection pools apply lazily to standard and Anthropic transports. Keep their config snapshots outside the shared protected-host transport cache so reload generations can retire stale pools; retain the existing protected-host fallback chain and unconfigured transport reuse.
 
 ### 8. Utilities & Upstream Fixes
 

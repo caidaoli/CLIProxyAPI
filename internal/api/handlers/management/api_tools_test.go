@@ -987,8 +987,8 @@ func TestAPICallResolvesMetaToken(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/test" {
-			if got := r.Header.Get("X-Client-Id"); got != "tbh:tui" {
-				t.Errorf("X-Client-Id = %q, want tbh:tui", got)
+			if got := r.Header.Get("X-Client-Id"); got != "tbh:exec" {
+				t.Errorf("X-Client-Id = %q, want tbh:exec", got)
 			}
 			authHeader := r.Header.Get("Authorization")
 			w.Header().Set("Content-Type", "application/json")

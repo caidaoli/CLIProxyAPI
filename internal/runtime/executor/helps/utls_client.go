@@ -860,6 +860,9 @@ func (c *utlsH2DegradeCacheStore) recordSuccess(key string) {
 // adaptive Chrome transport for other protected hosts, and the standard
 // transport for everything else.
 type fallbackRoundTripper struct {
+	mu                      sync.Mutex
+	anthropicFn             func() http.RoundTripper
+	fallbackFn              func() http.RoundTripper
 	anthropic               http.RoundTripper
 	utls                    http.RoundTripper
 	protectedHTTP11         http.RoundTripper
@@ -896,9 +899,36 @@ func (f *fallbackRoundTripper) h2DegradeKey(hostname string) string {
 	return f.h2DegradeScope + "\x00" + hostname
 }
 
+// Resolve credential pools only for the branch used by this client. Capturing
+// config snapshots here, rather than in the shared protected transport cache,
+// lets a reload fence old snapshots without replacing the protected transports.
+func (f *fallbackRoundTripper) anthropicRoundTripper() http.RoundTripper {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicFn != nil {
+		if rt := f.anthropicFn(); rt != nil {
+			f.anthropic = rt
+		}
+		f.anthropicFn = nil
+	}
+	return f.anthropic
+}
+
+func (f *fallbackRoundTripper) fallbackRoundTripper() http.RoundTripper {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fallbackFn != nil {
+		if rt := f.fallbackFn(); rt != nil {
+			f.fallback = rt
+		}
+		f.fallbackFn = nil
+	}
+	return f.fallback
+}
+
 func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if IsAnthropicUpstreamURL(req.URL) {
-		return f.anthropic.RoundTrip(req)
+		return f.anthropicRoundTripper().RoundTrip(req)
 	}
 	if req.URL.Scheme == "https" {
 		hostname := strings.ToLower(req.URL.Hostname())
@@ -906,7 +936,7 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 			return f.roundTripProtected(req)
 		}
 	}
-	return f.fallback.RoundTrip(req)
+	return f.fallbackRoundTripper().RoundTrip(req)
 }
 
 // claudeCodeSessionCacheCapacity bounds the per-transport TLS session cache for
@@ -1065,6 +1095,13 @@ func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 }
 
 func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+	return newClaudeCodeRoundTripperForDialer(claudeCodeDialer(proxyURL))
+}
+
+// claudeCodeDialer resolves the dialer the Claude Code transport uses for one proxy
+// setting. It is shared by the cached transport and the per-credential pooled one so
+// both keep the same proxy semantics.
+func claudeCodeDialer(proxyURL string) proxy.Dialer {
 	var dialer proxy.Dialer = proxy.Direct
 	if proxyURL != "" {
 		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
@@ -1074,7 +1111,22 @@ func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
 			dialer = proxyDialer
 		}
 	}
-	return newClaudeCodeRoundTripperForDialer(dialer)
+	return dialer
+}
+
+// pooledClaudeCodeTransport returns the credential-scoped Claude Code uTLS transport
+// when the credential opted into pooling, or nil so the caller keeps the historical
+// shared per-proxy transport. Per credential pooling matters here because this
+// transport is otherwise shared by every key that uses the same proxy, which mixes
+// distinct identities on one connection and ignores the key's pool settings.
+func pooledClaudeCodeTransport(proxyURL string, cfg *config.Config, auth *cliproxyauth.Auth) *http.Transport {
+	tr, pooled := pooledTransport(proxyPoolKindClaudeCode, proxyURL, cfg, auth, func() (*http.Transport, error) {
+		return newClaudeCodeRoundTripperForDialer(claudeCodeDialer(proxyURL)), nil
+	})
+	if !pooled {
+		return nil
+	}
+	return tr
 }
 
 // newClaudeCodeRoundTripperForDialer builds the Claude Code transport on top
@@ -1104,6 +1156,7 @@ func newClaudeCodeRoundTripperForDialerAndRoots(dialer proxy.Dialer, roots *x509
 			if err != nil {
 				return nil, fmt.Errorf("claude tls: dial upstream: %w", err)
 			}
+			conn = stampProxyKeepAlive(conn)
 
 			host, _, errSplit := net.SplitHostPort(addr)
 			if errSplit != nil {
@@ -1341,6 +1394,30 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		transport = newUtlsFallbackRoundTripper(proxyURL, ctxRoundTripper)
 	} else {
 		transport = utlsClientTransportCache.transport(proxyURL, utlsClientTransportScope(auth))
+	}
+
+	if _, pooled := resolveProxyPoolSettings(auth); pooled && !(proxyURL == "" && ctxRoundTripper != nil) {
+		base := transport.(*fallbackRoundTripper)
+		transport = &fallbackRoundTripper{
+			anthropic: base.anthropic,
+			anthropicFn: func() http.RoundTripper {
+				if tr := pooledClaudeCodeTransport(proxyURL, cfg, auth); tr != nil {
+					return tr
+				}
+				return base.anthropic
+			},
+			utls:                    base.utls,
+			protectedHTTP11:         base.protectedHTTP11,
+			protectedFallbackHTTP11: base.protectedFallbackHTTP11,
+			fallback:                base.fallback,
+			fallbackFn: func() http.RoundTripper {
+				if tr := pooledProxyTransport(proxyURL, cfg, auth); tr != nil {
+					return tr
+				}
+				return base.fallback
+			},
+			h2DegradeScope: base.h2DegradeScope,
+		}
 	}
 
 	client := &http.Client{

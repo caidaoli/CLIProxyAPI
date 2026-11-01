@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -428,6 +429,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		internalusage.CloseDatabasePlugin()
+		helps.RetireProxyPoolPublisher(s.proxyPoolPublisher)
 		usage.StopDefault()
 	})
 	return shutdownErr

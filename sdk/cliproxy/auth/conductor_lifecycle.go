@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -378,6 +379,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if mode == updateModeRefresh {
 		merged := MergeRefreshedAuth(base, existing, auth)
 		if merged != nil {
+			if merged.Disabled || merged.Status == StatusDisabled {
+				merged.RefreshFailures = auth.RefreshFailures
+			}
 			auth = merged
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
@@ -494,6 +498,23 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 					if len(resumed) > 0 {
 						cooldownStateChanged = true
 					}
+				} else if auth.RequiresSignIn && !auth.HasValidAccessToken(now) {
+					auth.Unavailable = true
+					auth.Status = StatusError
+					if auth.StatusMessage == "" {
+						if existing.StatusMessage != "" {
+							auth.StatusMessage = existing.StatusMessage
+						} else {
+							auth.StatusMessage = "unauthorized (refresh token invalid)"
+						}
+					}
+					if auth.LastError == nil {
+						if existing.LastError != nil {
+							auth.LastError = cloneError(existing.LastError)
+						} else if auth.RefreshError != nil {
+							auth.LastError = &Error{Code: "unauthorized", Message: auth.RefreshError.Message, HTTPStatus: http.StatusUnauthorized}
+						}
+					}
 				}
 			}
 		} else {
@@ -522,15 +543,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	} else {
 		applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 		applyPreservedRenewalState(existing, auth, mode, now)
-		if !credChanged {
-			auth.LastRefreshedAt = existing.LastRefreshedAt
-			auth.NextRefreshAfter = existing.NextRefreshAfter
-			auth.RefreshFailures = existing.RefreshFailures
-		} else if authHasUnchangedRejectedRefreshToken(auth) {
-			if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
-				auth.NextRefreshAfter = exp
-			} else {
-				auth.NextRefreshAfter = time.Time{}
+		// Refresh updates must retain their outcome rather than the pending job marker.
+		if mode != updateModeRefresh {
+			if !credChanged {
+				auth.LastRefreshedAt = existing.LastRefreshedAt
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+				auth.RefreshFailures = existing.RefreshFailures
+			} else if authHasUnchangedRejectedRefreshToken(auth) {
+				if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
+					auth.NextRefreshAfter = exp
+				} else {
+					auth.NextRefreshAfter = time.Time{}
+				}
 			}
 		}
 	}
