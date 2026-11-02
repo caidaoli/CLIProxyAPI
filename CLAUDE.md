@@ -8,7 +8,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.10
-- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.51
+- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.52
 - Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · uTLS protected-host 降级
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
@@ -167,7 +167,7 @@ go test -count=1 ./internal/usage/                         # 禁用缓存
 
 ## Fork-Specific Modifications (Upstream Merge Protection)
 
-> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.51）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
+> **合并上游时必须保护下列行为和文件**。清单以当前 `upstream/main`（v8.0.52）为基线；TUI 已在上游，不是 fork 增量。被覆盖/删除，或重新引入下面明确删除的上游文件，均属于合并错误。
 
 ### 1. Usage Persistence & SQLite Store
 
@@ -273,7 +273,7 @@ Modified:
 ### 8. Utilities & Upstream Fixes
 
 - `internal/util/util.go` — `GetEnvTrimmed(keys...)`：按顺序读取并 trim 首个非空环境变量
-- `internal/api/middleware/response_writer.go` — streaming 日志 goroutine 持有自己的 writer/channel 引用，修复 `Finalize` 清空字段导致的 data race；上游修复后改取上游
+- `internal/api/middleware/response_writer.go` — streaming 日志 goroutine 持有自己的 writer/channel 引用；v8.0.52 已包含等价的 data race 修复，使用上游实现
 
 ### 9. CI/CD, Build & Dependencies
 

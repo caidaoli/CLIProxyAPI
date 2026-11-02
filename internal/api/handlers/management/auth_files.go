@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
@@ -22,7 +23,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
@@ -340,24 +340,26 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, query authFileListQuery,
 				},
 			}
 			if data, errRead := os.ReadFile(full); errRead == nil {
-				typeValue := gjson.GetBytes(data, "type").String()
-				emailValue := gjson.GetBytes(data, "email").String()
+				var fieldBuf [10]ojson.Result
+				fields := ojson.GetManyBytesNoCopy(fieldBuf[:0], data, "type", "email", "project_id", "priority", coreauth.AttributeWeight, "note", "websockets", "disabled", "status_message", "status")
+				typeValue := strings.Clone(fields[0].String())
+				emailValue := strings.Clone(fields[1].String())
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
 				diskAuth.Provider = typeValue
-				diskAuth.Disabled = gjson.GetBytes(data, "disabled").Bool()
-				diskAuth.StatusMessage = strings.TrimSpace(gjson.GetBytes(data, "status_message").String())
-				if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "status").String()), string(coreauth.StatusDisabled)) {
+				diskAuth.Disabled = fields[7].Bool()
+				diskAuth.StatusMessage = strings.Clone(strings.TrimSpace(fields[8].String()))
+				if strings.EqualFold(strings.TrimSpace(fields[9].String()), string(coreauth.StatusDisabled)) {
 					diskAuth.Status = coreauth.StatusDisabled
 				}
-				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
-					fileData["project_id"] = projectID
+				if projectID := strings.TrimSpace(fields[2].String()); projectID != "" {
+					fileData["project_id"] = strings.Clone(projectID)
 				}
-				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
+				if pv := fields[3]; pv.Exists() {
 					switch pv.Type {
-					case gjson.Number:
+					case ojson.Number:
 						fileData["priority"] = int(pv.Int())
-					case gjson.String:
+					case ojson.String:
 						if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(pv.String())); errAtoi == nil {
 							fileData["priority"] = parsed
 						}
@@ -366,12 +368,12 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, query authFileListQuery,
 				if priority, ok := fileData["priority"].(int); ok {
 					diskAuth.Attributes["priority"] = strconv.Itoa(priority)
 				}
-				if wv := gjson.GetBytes(data, coreauth.AttributeWeight); wv.Exists() {
+				if wv := fields[4]; wv.Exists() {
 					var rawWeight string
 					switch wv.Type {
-					case gjson.Number:
+					case ojson.Number:
 						rawWeight = wv.Raw
-					case gjson.String:
+					case ojson.String:
 						rawWeight = wv.String()
 					}
 					if rawWeight != "" {
@@ -380,18 +382,18 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, query authFileListQuery,
 						}
 					}
 				}
-				if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
+				if nv := fields[5]; nv.Exists() && nv.Type == ojson.String {
 					if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
-						fileData["note"] = trimmed
+						fileData["note"] = strings.Clone(trimmed)
 					}
 				}
-				if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
+				if wv := fields[6]; wv.Exists() {
 					switch wv.Type {
-					case gjson.True:
+					case ojson.True:
 						fileData["websockets"] = true
-					case gjson.False:
+					case ojson.False:
 						fileData["websockets"] = false
-					case gjson.String:
+					case ojson.String:
 						if parsed, errParse := strconv.ParseBool(strings.TrimSpace(wv.String())); errParse == nil {
 							fileData["websockets"] = parsed
 						}

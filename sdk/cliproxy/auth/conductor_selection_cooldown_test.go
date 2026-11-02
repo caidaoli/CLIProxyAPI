@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 func TestManagerSelectAuthBuiltInSelectorCooldownPreservesRouteModel(t *testing.T) {
@@ -55,10 +55,10 @@ func TestManagerSelectAuthBuiltInSelectorCooldownPreservesRouteModel(t *testing.
 			if errPick == nil {
 				t.Fatal("SelectAuth() error = nil, want model cooldown")
 			}
-			if got := gjson.Get(errPick.Error(), "error.code").String(); got != "model_cooldown" {
+			if got := ojson.Get(errPick.Error(), "error.code").String(); got != "model_cooldown" {
 				t.Fatalf("SelectAuth() error code = %q, want model_cooldown; error=%v", got, errPick)
 			}
-			if got := gjson.Get(errPick.Error(), "error.model").String(); got != routeModel {
+			if got := ojson.Get(errPick.Error(), "error.model").String(); got != routeModel {
 				t.Fatalf("SelectAuth() cooldown model = %q, want %q; error=%v", got, routeModel, errPick)
 			}
 		})
