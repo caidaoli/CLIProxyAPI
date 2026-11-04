@@ -514,11 +514,19 @@ func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	if err = os.RemoveAll(s.authDir); err != nil {
-		return fmt.Errorf("postgres store: reset auth directory: %w", err)
-	}
 	if err = os.MkdirAll(s.authDir, 0o700); err != nil {
 		return fmt.Errorf("postgres store: recreate auth directory: %w", err)
+	}
+	if err = filepath.WalkDir(s.authDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 || (!entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".json")) {
+			return os.Remove(path)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("postgres store: remove stale auth files: %w", err)
 	}
 
 	for rows.Next() {

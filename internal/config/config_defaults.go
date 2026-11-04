@@ -8,4 +8,5 @@ const (
 	MinAuthLoadWorkers           = 1
 	MaxAuthLoadWorkers           = 64
 	DefaultDiscoveryServiceType  = "_ai-gateway._tcp"
+	DefaultKVStorePath           = "kv.db"
 )

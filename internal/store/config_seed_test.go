@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -186,18 +188,23 @@ func TestObjectTokenStoreSeedRefusesConfigThatKeepsPlaintextSecret(t *testing.T)
 	}
 }
 
-// seedTestDatabase is a database/sql driver whose config table is empty; it records
-// every config upsert.
+// seedTestDatabase is a database/sql driver with an empty config table and
+// configurable auth records; it records every config upsert.
 type seedTestDatabase struct {
-	mu      sync.Mutex
-	upserts []string
+	mu          sync.Mutex
+	upserts     []string
+	authRecords [][2]string
 }
 
 type seedTestConn struct {
 	database *seedTestDatabase
 }
 
-type seedTestRows struct{}
+type seedTestRows struct {
+	columns []string
+	values  [][]driver.Value
+	next    int
+}
 
 func (d *seedTestDatabase) Open(string) (driver.Conn, error) {
 	return &seedTestConn{database: d}, nil
@@ -222,6 +229,9 @@ func (*seedTestConn) Begin() (driver.Tx, error) {
 }
 
 func (c *seedTestConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if strings.HasPrefix(strings.TrimSpace(query), "CREATE TABLE IF NOT EXISTS") {
+		return driver.RowsAffected(0), nil
+	}
 	if !strings.Contains(query, "INSERT INTO") || len(args) != 2 {
 		return nil, fmt.Errorf("unexpected statement %q", query)
 	}
@@ -235,21 +245,38 @@ func (c *seedTestConn) ExecContext(_ context.Context, query string, args []drive
 	return driver.RowsAffected(1), nil
 }
 
-// QueryContext serves an empty config table.
-func (*seedTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
-	return seedTestRows{}, nil
+func (c *seedTestConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	switch {
+	case strings.HasPrefix(query, "SELECT content FROM "):
+		return &seedTestRows{columns: []string{"content"}}, nil
+	case strings.HasPrefix(query, "SELECT id, content FROM "):
+		c.database.mu.Lock()
+		defer c.database.mu.Unlock()
+		values := make([][]driver.Value, len(c.database.authRecords))
+		for i, record := range c.database.authRecords {
+			values[i] = []driver.Value{record[0], record[1]}
+		}
+		return &seedTestRows{columns: []string{"id", "content"}, values: values}, nil
+	default:
+		return nil, fmt.Errorf("unexpected query %q", query)
+	}
 }
 
-func (seedTestRows) Columns() []string {
-	return []string{"content"}
+func (r *seedTestRows) Columns() []string {
+	return r.columns
 }
 
-func (seedTestRows) Close() error {
+func (*seedTestRows) Close() error {
 	return nil
 }
 
-func (seedTestRows) Next([]driver.Value) error {
-	return io.EOF
+func (r *seedTestRows) Next(dest []driver.Value) error {
+	if r.next == len(r.values) {
+		return io.EOF
+	}
+	copy(dest, r.values[r.next])
+	r.next++
+	return nil
 }
 
 func newSeedTestPostgresStore(t *testing.T, configPath string) (*PostgresStore, *seedTestDatabase) {
@@ -331,4 +358,119 @@ func TestPostgresStoreSeedRefusesConfigThatKeepsPlaintextSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgresStoreBootstrapPreservesKVAndReplacesAuthFiles(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config", "config.yaml")
+	writeSeedTestFile(t, configPath, "port: 8317\n")
+	postgresStore, database := newSeedTestPostgresStore(t, configPath)
+	postgresStore.cfg.AuthTable = defaultAuthTable
+	postgresStore.cfg.CooldownTable = defaultCooldownTable
+	postgresStore.authDir = filepath.Join(dir, "auths")
+	writeSeedTestFile(t, filepath.Join(postgresStore.AuthDir(), "active.json"), `{"type":"codex","access_token":"old"}`)
+	preserved := map[string]string{
+		"notes.txt":              "local notes",
+		"nested/cache.bin":       "local state",
+		"archive.json/notes.txt": "directory with a JSON suffix",
+	}
+	for name, content := range preserved {
+		writeSeedTestFile(t, filepath.Join(postgresStore.AuthDir(), name), content)
+	}
+
+	kvPath := filepath.Join(postgresStore.AuthDir(), "kv.db")
+	func() {
+		kvStore, errOpen := kvstore.OpenBoltStore(kvPath)
+		if errOpen != nil {
+			t.Fatalf("OpenBoltStore() error = %v", errOpen)
+		}
+		defer func() {
+			if errClose := kvStore.Close(); errClose != nil {
+				t.Errorf("kvStore.Close() error = %v", errClose)
+			}
+		}()
+		if written, errSet := kvStore.KVSet(context.Background(), "session-date-pin", []byte("2026-11-04"), kvstore.KVSetOptions{}); errSet != nil || !written {
+			t.Fatalf("KVSet() = %v, %v; want true, nil", written, errSet)
+		}
+	}()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		for _, name := range []string{"stale.json", "nested/stale.JSON"} {
+			writeSeedTestFile(t, filepath.Join(postgresStore.AuthDir(), name), `{"type":"codex"}`)
+		}
+		payload := fmt.Sprintf(`{"type":"codex","access_token":"fresh-%d"}`, attempt)
+		database.mu.Lock()
+		database.authRecords = [][2]string{{"active.json", payload}}
+		if attempt == 1 {
+			database.authRecords = append(database.authRecords, [2]string{"nested/active.JSON", payload})
+		}
+		database.mu.Unlock()
+
+		if errBootstrap := postgresStore.Bootstrap(context.Background(), ""); errBootstrap != nil {
+			t.Fatalf("attempt %d: Bootstrap() error = %v", attempt, errBootstrap)
+		}
+		if got := string(readSeedTestFile(t, filepath.Join(postgresStore.AuthDir(), "active.json"))); got != payload {
+			t.Fatalf("attempt %d: mirrored auth = %q, want %q", attempt, got, payload)
+		}
+		for _, name := range []string{"stale.json", "nested/stale.JSON"} {
+			if _, errStat := os.Stat(filepath.Join(postgresStore.AuthDir(), name)); !errors.Is(errStat, os.ErrNotExist) {
+				t.Fatalf("attempt %d: stale auth %s still exists (err=%v)", attempt, name, errStat)
+			}
+		}
+		nestedAuth := filepath.Join(postgresStore.AuthDir(), "nested", "active.JSON")
+		if attempt == 1 {
+			if got := string(readSeedTestFile(t, nestedAuth)); got != payload {
+				t.Fatalf("mirrored nested auth = %q, want %q", got, payload)
+			}
+		} else if _, errStat := os.Stat(nestedAuth); !errors.Is(errStat, os.ErrNotExist) {
+			t.Fatalf("deleted database auth still exists locally (err=%v)", errStat)
+		}
+		func() {
+			kvStore, errOpen := kvstore.OpenBoltStore(kvPath)
+			if errOpen != nil {
+				t.Fatalf("attempt %d: reopen KV store: %v", attempt, errOpen)
+			}
+			defer func() {
+				if errClose := kvStore.Close(); errClose != nil {
+					t.Errorf("kvStore.Close() error = %v", errClose)
+				}
+			}()
+			if got, found, errGet := kvStore.KVGet(context.Background(), "session-date-pin"); errGet != nil || !found || string(got) != "2026-11-04" {
+				t.Fatalf("attempt %d: persisted KV = %q, %v, %v; want retained session date", attempt, got, found, errGet)
+			}
+		}()
+		for name, content := range preserved {
+			if got := string(readSeedTestFile(t, filepath.Join(postgresStore.AuthDir(), name))); got != content {
+				t.Fatalf("attempt %d: local file %s = %q, want %q", attempt, name, got, content)
+			}
+		}
+	}
+
+	t.Run("directory symlink", func(t *testing.T) {
+		outsideDir := t.TempDir()
+		outsideAuth := filepath.Join(outsideDir, "active.json")
+		const outsideContent = `{"type":"codex","access_token":"outside"}`
+		writeSeedTestFile(t, outsideAuth, outsideContent)
+		linkPath := filepath.Join(postgresStore.AuthDir(), "linked")
+		if errSymlink := os.Symlink(outsideDir, linkPath); errSymlink != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlinks unavailable: %v", errSymlink)
+			}
+			t.Fatalf("os.Symlink() error = %v", errSymlink)
+		}
+		const mirroredContent = `{"type":"codex","access_token":"mirrored"}`
+		database.mu.Lock()
+		database.authRecords = [][2]string{{"linked/active.json", mirroredContent}}
+		database.mu.Unlock()
+
+		if errBootstrap := postgresStore.Bootstrap(context.Background(), ""); errBootstrap != nil {
+			t.Fatalf("Bootstrap() error = %v", errBootstrap)
+		}
+		if got := string(readSeedTestFile(t, outsideAuth)); got != outsideContent {
+			t.Fatalf("external auth was overwritten: got %q, want %q", got, outsideContent)
+		}
+		if got := string(readSeedTestFile(t, filepath.Join(linkPath, "active.json"))); got != mirroredContent {
+			t.Fatalf("mirrored auth = %q, want %q", got, mirroredContent)
+		}
+	})
 }

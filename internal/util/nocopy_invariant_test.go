@@ -104,6 +104,7 @@ type reviewedInPlaceByteWrite struct {
 }
 
 var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
+	"internal/kvstore/bolt_store.go":                                {1, "copies the value into a freshly allocated binary envelope before publishing it; no JSON reader aliases the buffer"},
 	"internal/watcher/auth_load.go":                                 {1, "assigns a uint64 map value; no byte buffer is mutated"},
 	"internal/translator/common/apply_patch_responses.go":           {1, "shifts [][]byte item references in a private output slice; no byte of any JSON payload is rewritten"},
 	"internal/translator/common/vertex_partial_args.go":             {1, "shifts []string object keys to insert a key; no byte of any payload is rewritten"},
