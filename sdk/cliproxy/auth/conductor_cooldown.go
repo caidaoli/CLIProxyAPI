@@ -2708,7 +2708,8 @@ var (
 
 func isKnownSafeOAuthErrorCode(code string) bool {
 	switch strings.ToLower(strings.TrimSpace(code)) {
-	case "refresh_token_reused",
+	case "refresh_outcome_unknown",
+		"refresh_token_reused",
 		"refresh_token_expired",
 		"refresh_token_invalidated",
 		"token_revoked",
@@ -2768,6 +2769,7 @@ func sanitizeRenewalMessage(raw string) string {
 func isTerminalRefreshGrantMessage(message string) bool {
 	lower := strings.ToLower(message)
 	for _, token := range []string{
+		"refresh_outcome_unknown",
 		"refresh_token_reused",
 		"refresh_token_expired",
 		"refresh_token_invalidated",
@@ -2809,6 +2811,7 @@ func isTerminalRefreshError(auth *Auth, err error) bool {
 func terminalRefreshErrorCode(message string, statusCode int) string {
 	lower := strings.ToLower(message)
 	for _, code := range []string{
+		"refresh_outcome_unknown",
 		"refresh_token_reused",
 		"refresh_token_expired",
 		"refresh_token_invalidated",

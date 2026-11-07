@@ -191,6 +191,15 @@ func decoratePluginFileAuths(ctx *SynthesisContext, fullPath string, metadata ma
 	if errExcluded != nil {
 		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
 	}
+	filePortalHint := ""
+	for _, key := range []string{"oauth_provider", "portal"} {
+		if raw, ok := metadata[key].(string); ok {
+			if hint := strings.ToLower(strings.TrimSpace(raw)); hint != "" {
+				filePortalHint = hint
+				break
+			}
+		}
+	}
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	disabled, _ := metadata["disabled"].(bool)
 	for index, auth := range auths {
@@ -198,6 +207,29 @@ func decoratePluginFileAuths(ctx *SynthesisContext, fullPath string, metadata ma
 			continue
 		}
 		coreauth.NormalizeCredentialMetadata(auth.Metadata)
+		if filePortalHint != "" {
+			hasPortalHint := false
+			for _, key := range []string{"oauth_provider", "portal"} {
+				raw, _ := auth.Metadata[key].(string)
+				if strings.TrimSpace(auth.Attributes[key]) != "" || strings.TrimSpace(raw) != "" {
+					hasPortalHint = true
+					break
+				}
+			}
+			if !hasPortalHint {
+				if auth.Metadata == nil {
+					auth.Metadata = make(map[string]any)
+				}
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Metadata["oauth_provider"] = filePortalHint
+				auth.Attributes["oauth_provider"] = filePortalHint
+				if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+					setter.SetMetadata(auth.Metadata)
+				}
+			}
+		}
 		if len(auths) > 1 {
 			coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
 		}

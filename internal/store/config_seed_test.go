@@ -200,6 +200,11 @@ type seedTestConn struct {
 	database *seedTestDatabase
 }
 
+type seedTestTx struct{}
+
+func (seedTestTx) Commit() error   { return nil }
+func (seedTestTx) Rollback() error { return nil }
+
 type seedTestRows struct {
 	columns []string
 	values  [][]driver.Value
@@ -225,11 +230,11 @@ func (*seedTestConn) Close() error {
 }
 
 func (*seedTestConn) Begin() (driver.Tx, error) {
-	return nil, errors.New("transactions are not supported")
+	return seedTestTx{}, nil
 }
 
 func (c *seedTestConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if strings.HasPrefix(strings.TrimSpace(query), "CREATE TABLE IF NOT EXISTS") {
+	if strings.HasPrefix(strings.TrimSpace(query), "CREATE TABLE IF NOT EXISTS") || strings.HasPrefix(query, "SELECT pg_advisory_xact_lock(") {
 		return driver.RowsAffected(0), nil
 	}
 	if !strings.Contains(query, "INSERT INTO") || len(args) != 2 {
