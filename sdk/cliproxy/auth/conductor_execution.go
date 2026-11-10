@@ -97,7 +97,7 @@ func unwrapExecutionBoundaryError(err error) error {
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
-	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
+	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) || isSessionAffinityRetryError(fallback) {
 		return fallback
 	}
 	if upstream == nil {
@@ -116,6 +116,46 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 		return markUpstreamExecutionAttempt(&preferred)
 	}
 	return markUpstreamExecutionAttempt(upstream)
+}
+
+func (m *Manager) normalizeSessionAffinityNeverTerminalError(err error, providers []string, model string, opts cliproxyexecutor.Options) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if isRequestTerminatedError(err) || isRequestStopError(err) || isRequestInvalidError(err) || isSessionAffinityRetryError(err) {
+		return err
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		switch authErr.Code {
+		case "session_auth_unavailable", "auth_not_found", "auth_unavailable", "model_cooldown", "provider_not_found", "executor_not_found":
+			return err
+		}
+	}
+	var cooldownErr *modelCooldownError
+	if errors.As(err, &cooldownErr) && cooldownErr != nil {
+		return err
+	}
+	affinity, ok := m.Selector().(*SessionAffinitySelector)
+	if !ok || affinity == nil || !affinity.rebindOnNever {
+		return err
+	}
+	if _, okBound := affinity.boundAuthForRequest(providers, model, opts); !okBound {
+		return err
+	}
+	rerr := resultErrorFromError(err)
+	if shouldRebindSessionAffinityOnError(rerr) {
+		return err
+	}
+	if shouldSkipCredentialCooldown(rerr) && !isTransientTransportResultError(rerr) && !isConnectionLifecycleResultError(rerr) {
+		return err
+	}
+	return &Error{
+		Code:       "session_auth_retry",
+		Message:    "bound session credential is transiently unavailable",
+		Retryable:  true,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
 }
 
 // Execute performs a non-streaming execution using the configured selector and executor.
@@ -174,6 +214,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
@@ -236,7 +277,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			}
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
-		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(lastErr)
+		lastErr = unwrapExecutionBoundaryError(lastErr)
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
+		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
@@ -317,6 +360,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
+		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
@@ -1115,6 +1159,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
+		if selection != nil {
+			execCtx = coreusage.WithHomeSelection(execCtx, coreusage.HomeSelection{
+				Reused: selection.Retained(), Model: routeModel, CredentialPolicy: credentialPolicyFromContext(ctx),
+			})
+		}
 		execCtx = newUpstreamAttemptContext(execCtx)
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
 		// Home owns dispatched credential availability; only local selections need state filtering.

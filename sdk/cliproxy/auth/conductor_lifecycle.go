@@ -142,6 +142,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.CredentialVersion = 1
 	}
 	auth.Generation = 1
+	aliasTableBeforeSave := m.oauthModelAlias.Load()
 	// Serialize this credential, but release the manager lock during store I/O.
 	// Persist failures stay non-fatal, but must not be silent: a restart would
 	// lose the credential that only exists in memory.
@@ -151,6 +152,12 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
+	}
+	if m.oauthModelAlias.Load() != aliasTableBeforeSave {
+		cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged
+		if len(auth.ModelStates) > 0 {
+			updateAggregatedAvailability(auth, now)
+		}
 	}
 	auth.ClearFileSnapshot()
 	authClone := auth.Clone()
@@ -568,7 +575,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	_, deferCooldownCleanup := m.cooldownRestoreIDs[auth.ID]
 	m.applyPendingCooldownRestoreLocked(auth, now)
 	auth.UpdatedAt = now
-	cooldownStateChanged = normalizeModelStates(auth) || cooldownStateChanged
+	cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
@@ -600,6 +607,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		return nil, false, authUpdateEffects{}, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
+	if m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) {
+		cooldownStateChanged = true
+		updateAggregatedAvailability(auth, now)
+	}
 	if (auth.RejectedAccessToken == "" && existing.RejectedAccessToken != "") || (auth.RejectedSIWCAccessToken == "" && existing.RejectedSIWCAccessToken != "") {
 		probe := auth.Clone()
 		probe.CodexRefreshPatch = refreshPatchBeforeSave
@@ -859,6 +870,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
+	now := time.Now()
 	previousAuths := m.auths
 	m.auths = make(map[string]*Auth, len(items))
 	if m.authEpochs == nil {
@@ -873,6 +885,10 @@ func (m *Manager) Load(ctx context.Context) error {
 			continue
 		}
 		auth.EnsureIndex()
+		_ = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false)
+		if len(auth.ModelStates) > 0 {
+			updateAggregatedAvailability(auth, now)
+		}
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
