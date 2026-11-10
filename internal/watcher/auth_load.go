@@ -176,7 +176,7 @@ func (w *Watcher) snapshotAuthLoadInputs() authLoadSnapshot {
 	if w.config != nil {
 		cfg = w.config.CloneForRuntime()
 	}
-	return authLoadSnapshot{config: cfg, parser: w.pluginAuthParser, authDir: w.authDir, now: time.Now().UTC()}
+	return authLoadSnapshot{config: cfg, parser: w.pluginAuthParser, authDir: w.currentAuthDirLocked(), now: time.Now().UTC()}
 }
 
 func (w *Watcher) snapshotFileGenerationBaseline(isInitialScan bool) map[string]uint64 {
@@ -577,6 +577,11 @@ func (w *Watcher) reconcileMissingInitialAuthPaths(ctx context.Context, sequence
 				continue
 			}
 			oldByID := cloneAuthMap(w.fileAuthsByPath[path])
+			for id := range oldByID {
+				if current := w.currentAuths[id]; current != nil && !w.sameNormalizedAuthPath(fileBackedAuthPath(current), path) {
+					delete(oldByID, id)
+				}
+			}
 			delete(w.fileAuthsByPath, path)
 			delete(w.lastAuthHashes, path)
 			delete(w.lastAuthContents, path)

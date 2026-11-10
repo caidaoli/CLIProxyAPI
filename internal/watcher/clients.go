@@ -121,7 +121,7 @@ func (w *Watcher) rereadDiscardedFileSnapshot(auth *coreauth.Auth) {
 
 	w.clientsMutex.Lock()
 	existing := w.currentAuths[auth.ID]
-	if existing == nil || !existing.SameFileSnapshot(auth) {
+	if existing == nil || !existing.SameFileSnapshot(auth) || !w.isPathInCurrentAuthDirLocked(path) {
 		w.clientsMutex.Unlock()
 		return
 	}
@@ -139,6 +139,24 @@ func (w *Watcher) rereadDiscardedFileSnapshot(auth *coreauth.Auth) {
 	w.clientsMutex.Unlock()
 
 	w.addOrUpdateClientLocked(path)
+}
+
+func (w *Watcher) sameNormalizedAuthPath(pathA, pathB string) bool {
+	normA := w.normalizeAuthPath(pathA)
+	normB := w.normalizeAuthPath(pathB)
+	if normA == "" || normB == "" {
+		return false
+	}
+	if normA == normB {
+		return true
+	}
+	if absA, errAbsA := filepath.Abs(normA); errAbsA == nil {
+		normA = w.normalizeAuthPath(absA)
+	}
+	if absB, errAbsB := filepath.Abs(normB); errAbsB == nil {
+		normB = w.normalizeAuthPath(absB)
+	}
+	return normA != "" && normA == normB
 }
 
 func (w *Watcher) invalidateAuthFileHashLocked(path string) string {
@@ -161,6 +179,9 @@ func (w *Watcher) invalidateAuthFileHashLocked(path string) string {
 }
 
 func (w *Watcher) addOrUpdateClientLocked(path string) {
+	if !w.isPathInCurrentAuthDir(path) {
+		return
+	}
 	w.observeAuthFile(path)
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
@@ -190,12 +211,13 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 		w.clientsMutex.Unlock()
 		return
 	}
-	cfg := w.config
-	authDir := w.authDir
-	parser := w.pluginAuthParser
-	if w.fileAuthsByPath == nil {
-		w.fileAuthsByPath = make(map[string]map[string]*coreauth.Auth)
+	if !w.isPathInCurrentAuthDirLocked(normalized) {
+		w.clientsMutex.Unlock()
+		return
 	}
+	cfg := w.config
+	authDir := w.currentAuthDirLocked()
+	parser := w.pluginAuthParser
 	if prev, ok := w.lastAuthHashes[normalized]; ok && prev == curHash {
 		log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(path))
 		w.clientsMutex.Unlock()
@@ -208,23 +230,6 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 		if cached := w.lastAuthContents[normalized]; cached != nil {
 			oldAuth = cached.Clone()
 		}
-	}
-
-	// Update caches
-	if w.lastAuthHashes == nil {
-		w.lastAuthHashes = make(map[string]string)
-	}
-	w.lastAuthHashes[normalized] = curHash
-	if cacheAuthContents {
-		if w.lastAuthContents == nil {
-			w.lastAuthContents = make(map[string]*coreauth.Auth)
-		}
-		w.lastAuthContents[normalized] = &newAuth
-	}
-
-	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
-	for id, a := range w.fileAuthsByPath[normalized] {
-		oldByID[id] = a
 	}
 	w.clientsMutex.Unlock()
 
@@ -252,6 +257,27 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 	}
 	newByID := authSliceToMap(generated)
 	w.clientsMutex.Lock()
+	if w.config == nil || !w.isPathInCurrentAuthDirLocked(normalized) || (authDir != "" && !w.sameNormalizedAuthPath(authDir, w.currentAuthDirLocked())) {
+		w.clientsMutex.Unlock()
+		return
+	}
+	if w.fileAuthsByPath == nil {
+		w.fileAuthsByPath = make(map[string]map[string]*coreauth.Auth)
+	}
+	if w.lastAuthHashes == nil {
+		w.lastAuthHashes = make(map[string]string)
+	}
+	w.lastAuthHashes[normalized] = curHash
+	if cacheAuthContents {
+		if w.lastAuthContents == nil {
+			w.lastAuthContents = make(map[string]*coreauth.Auth)
+		}
+		w.lastAuthContents[normalized] = &newAuth
+	}
+	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
+	for id, a := range w.fileAuthsByPath[normalized] {
+		oldByID[id] = a
+	}
 	if len(newByID) > 0 {
 		w.fileAuthsByPath[normalized] = cloneAuthMap(newByID)
 	} else {
@@ -275,9 +301,16 @@ func (w *Watcher) removeClient(path string) {
 }
 
 func (w *Watcher) removeClientLocked(path string) {
+	if !w.isPathInCurrentAuthDir(path) {
+		return
+	}
 	w.observeAuthFile(path)
 	normalized := w.normalizeAuthPath(path)
 	w.clientsMutex.Lock()
+	if !w.isPathInCurrentAuthDirLocked(normalized) {
+		w.clientsMutex.Unlock()
+		return
+	}
 	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
 	for id, a := range w.fileAuthsByPath[normalized] {
 		oldByID[id] = a
