@@ -1439,7 +1439,7 @@ func hasAntigravityProvider(providers []string) bool {
 }
 
 func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
-	if isRequestTerminatedError(lastErr) || isRequestStopError(lastErr) {
+	if isRequestTerminatedError(lastErr) || isRequestStopError(lastErr) || isSchedulerRejectError(lastErr) || hasRoundEndedBySchedulerReject(lastErr) {
 		return false
 	}
 	status := statusCodeFromError(lastErr)

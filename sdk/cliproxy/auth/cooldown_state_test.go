@@ -3,14 +3,17 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -826,6 +829,64 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 	}
 	if got := store.applyCount.Load(); got != 1 {
 		t.Fatalf("restore cleanup saved cooldown state %d times, want 1", got)
+	}
+}
+
+func TestManager_ClaudeCooldownHeadersSurviveFileRestore(t *testing.T) {
+	for _, credentialScope := range []bool{false, true} {
+		t.Run(strconv.FormatBool(credentialScope), func(t *testing.T) {
+			ctx := context.Background()
+			const model = "claude-cooldown-restore"
+			authID := "claude-restore-" + t.Name()
+			registerSchedulerModels(t, "claude", model, authID)
+			dir := t.TempDir()
+			retryDelay := 2 * time.Hour
+			reset := strconv.FormatInt(time.Now().Add(retryDelay).Unix(), 10)
+			headers := http.Header{
+				"Anthropic-Ratelimit-Unified-Status":               {"rejected"},
+				"Anthropic-Ratelimit-Unified-7d-Status":            {"rejected"},
+				"Anthropic-Ratelimit-Unified-7d-Reset":             {reset},
+				"Anthropic-Ratelimit-Unified-Representative-Claim": {"seven_day"},
+				"Anthropic-Ratelimit-Unified-Reset":                {reset},
+			}
+			for _, restore := range []bool{false, true} {
+				manager := NewManager(nil, nil, nil)
+				manager.RegisterExecutor(&mockCustomErrorExecutor{identifier: "claude"})
+				manager.SetCooldownStateStore(NewFileCooldownStateStore(dir))
+				if _, errRegister := manager.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: "claude", Status: StatusActive}); errRegister != nil {
+					t.Fatalf("Register() error = %v", errRegister)
+				}
+				if restore {
+					if errRestore := manager.RestoreCooldownStates(ctx); errRestore != nil {
+						t.Fatalf("RestoreCooldownStates() error = %v", errRestore)
+					}
+				} else {
+					markCtx := internallogging.WithResponseHeadersHolder(ctx)
+					internallogging.SetResponseHeaders(markCtx, headers)
+					manager.MarkResult(markCtx, Result{
+						AuthID: authID, Provider: "claude", Model: model,
+						CredentialScope: credentialScope, RetryAfter: &retryDelay,
+						Error: &Error{Message: "rate limited", HTTPStatus: http.StatusTooManyRequests},
+					})
+				}
+				_, errSelect := manager.SelectAuth(ctx, "claude", model, cliproxyexecutor.Options{})
+				var cooldown interface {
+					StatusCode() int
+					Headers() http.Header
+				}
+				if !errors.As(errSelect, &cooldown) || cooldown.StatusCode() != http.StatusTooManyRequests {
+					t.Fatalf("restore=%t: SelectAuth() error = %v, want cooldown 429", restore, errSelect)
+				}
+				for key := range headers {
+					if got := cooldown.Headers().Get(key); got != headers.Get(key) {
+						t.Fatalf("restore=%t: %s = %q, want %q", restore, key, got, headers.Get(key))
+					}
+				}
+				if errFlush := manager.FlushCooldownStates(ctx); errFlush != nil {
+					t.Fatalf("FlushCooldownStates() error = %v", errFlush)
+				}
+			}
+		})
 	}
 }
 
