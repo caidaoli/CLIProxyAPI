@@ -108,7 +108,8 @@ type Service struct {
 	cooldownStateStore coreauth.CooldownStateStore
 
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
-	pluginHost *pluginhost.Host
+	pluginHost          *pluginhost.Host
+	pluginRuntimeSyncWg sync.WaitGroup
 
 	// progressiveFileAuth reports that this Service owns the default file-backed auth manager.
 	progressiveFileAuth bool

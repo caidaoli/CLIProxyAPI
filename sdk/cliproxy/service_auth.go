@@ -270,7 +270,9 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		// Run plugin runtime sync asynchronously so auth updates don't block on
 		// unrelated in-flight Antigravity capability probes. The detached context
 		// lets the probe wait complete on its own schedule.
-		go s.syncPluginRuntime(context.Background())
+		s.pluginRuntimeSyncWg.Go(func() {
+			s.syncPluginRuntime(context.Background())
+		})
 	}
 	if ctx == nil || ctx.Err() == nil {
 		for _, i := range loaded {

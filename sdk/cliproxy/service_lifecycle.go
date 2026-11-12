@@ -222,8 +222,8 @@ func (s *Service) Run(ctx context.Context) error {
 
 	select {
 	case addr, ok := <-s.server.Listening():
-		if !ok || addr == nil {
-			return fmt.Errorf("cliproxy: server stopped before listener became ready")
+		if !ok {
+			return <-s.serverErr
 		}
 		s.listenerReadyAt = time.Now()
 		log.WithField("address", addr.String()).Info("API server listener ready")

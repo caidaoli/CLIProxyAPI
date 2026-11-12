@@ -15,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
@@ -87,13 +88,18 @@ func TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559(t *testing.T) {
 		t.Fatalf("watcherFactory failed: %v", errWatcher)
 	}
 	service.watcher = watcherWrapper
-	service.ensureAuthUpdateQueue(ctx)
+	service.authUpdates = make(chan watcher.AuthUpdateBatch, 256)
+	authUpdatesDone := make(chan struct{})
+	go func() {
+		defer close(authUpdatesDone)
+		service.consumeAuthUpdates(ctx)
+	}()
 	watcherWrapper.SetAuthUpdateQueue(service.authUpdates)
 	watcherWrapper.SetConfig(service.cfg)
 	t.Cleanup(func() {
-		if service.authQueueStop != nil {
-			service.authQueueStop()
-		}
+		cancel()
+		<-authUpdatesDone
+		service.pluginRuntimeSyncWg.Wait()
 		for _, a := range service.coreManager.List() {
 			if a != nil {
 				reg.UnregisterClient(a.ID)
@@ -254,6 +260,7 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
 	t.Cleanup(func() {
+		service.pluginRuntimeSyncWg.Wait()
 		for _, a := range service.coreManager.List() {
 			if a != nil {
 				reg.UnregisterClient(a.ID)

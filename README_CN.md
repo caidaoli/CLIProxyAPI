@@ -118,6 +118,10 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 <table>
 <tbody>
 <tr>
+<td width="180"><a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
+<td>感谢 AICodeMirror 赞助了本项目！AICodeMirror 提供 Claude Code / Codex / Gemini 官方高稳定中转服务，支持企业级高并发、极速开票、7×24 专属技术支持。 Claude Code / Codex / Gemini 官方渠道低至 3.8 / 0.2 / 0.9 折，充值更有折上折！AICodeMirror 为 CLIProxyAPI 的用户提供了特别福利，通过<a href="https://www.aicodemirror.ai/register?invitecode=TJNAIF" target="_blank">此链接</a>注册的用户，可享受首充8折，企业客户最高可享 7.5 折！</td>
+</tr>
+<tr>
 <td width="180"><a href="https://apikey.fan/register?aff=CLIProxyAPI"><img src="./assets/apikey.png" alt="APIKEY.FUN" width="150"></a></td>
 <td>感谢 APIKEY.FUN 赞助本项目！APIKEY.FUN 是一家专业的企业级 AI 中转站，致力于为企业和个人开发者提供稳定、高效、低成本的 AI 模型 API 接入服务。平台支持 Claude、OpenAI、Gemini 等主流热门模型，价格低至官方原价的 7%。通过本项目<a href="https://apikey.fan/register?aff=CLIProxyAPI">专属链接</a>注册，还可享受最高 <b>充值永久 95 折</b> 专属优惠。</td>
 </tr>
@@ -167,6 +171,18 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 <tr>
 <td width="180"><a href="https://x.com/chenju_ai"><img src="./assets/chenju.png" alt="陈局" width="150"></a></td>
 <td>感谢 <a href="https://x.com/chenju_ai">陈局</a> 赞助了本项目！这大概是本栏唯一一个不打站点广告的。好的开源项目值得被付费，陈局来随个份子，敬作者一杯。X 上找 <a href="https://x.com/chenju_ai">陈局</a> 吹吹水。</td>
+</tr>
+<tr>
+<td width="180"><a href="https://www.deepsiderapi.com/?utm_source=CLIProxyAPI"><img src="./assets/deepsiderapi.png" alt="DeepSider API" width="150"></a></td>
+<td>一站式接入 GPT、Claude、Gemini、DeepSeek 等领先 AI 模型。我们通过主流供应商的官方渠道接入，不使用共享账号池或逆向工程。相比官方价格，最高可节省 71%。实时追踪用量，计费透明，以更低成本使用 AI。<a href="https://www.deepsiderapi.com/?utm_source=CLIProxyAPI">体验 DeepSider API</a>。</td>
+</tr>
+<tr>
+<td width="180"><a href="https://origincoder.com/"><img src="./assets/origincoder.png" alt="DeepSider API" width="150"></a></td>
+<td><strong><a href="https://origincoder.com">OriginCoder</a>｜低延迟、高稳定、高并发的企业级 AI 网关</strong>，<strong>Claude Max 与 GPT Pro 号池全部自建自营，不降智池价格为官方的 3–4 折，池内降智状态实时公开可查</strong>，支持 <strong>GPT、Claude、Grok、Gemini-4-Carbon、DeepSeek 等国内外主流模型</strong>，可直接用于 <strong>Claude Code、Codex</strong> 等编程工具，支持 <strong>AI 对话、编程辅助、图像生成和视频生成</strong>，海外正规运营，自 <strong>2025 年 8 月运营至今，已服务 1.5 万+ 客户</strong>，费率公开、<strong>无超额费、10 元起充</strong>，后台 <strong>7×24 小时监测、号池冗余、多节点自动切换</strong>，保障高峰期访问稳定，<a href="https://origincoder.com/monitor">服务状态公开可查</a>，<strong>不保存用户会话内容，保护隐私安全</strong>，支持<strong>对公支付与企业开票</strong>，客服 <strong>3 分钟内响应</strong>、技术团队 <strong>24 小时值守</strong>，国内用户可通过<a href="https://cn.origincoder.com">国内加速入口</a>访问。</td>
+</tr>
+<tr>
+<td width="180"><a href="https://visioncoder.cn/"><img src="./assets/visioncoder.svg" alt="VisionCoder" width="150"></a></td>
+<td><strong><a href="https://visioncoder.cn/">VisionCoder</a>｜国内版 OpenRouter，一个 API 接入国内外主流大模型。</strong> 覆盖 <strong>DeepSeek、Qwen、Kimi、GLM、GPT、Claude、Gemini、Grok</strong>，多供应商智能选路、故障自动切换，<strong>失败请求不收费，价格公开、账单可复算</strong>。适配 Claude Code、Codex 等编程工具，支持 <strong><a href="https://visioncoder.cn/me/keys">CC Switch 和 WorkBuddy 一键导入</a></strong>。企业统一采购，按席位下发订阅套餐、收回再分配，支持对公转账与开票。<strong>供应商入驻开放：上架线路，按质量拿流量；月结对公、用量可查，用户侧计费开票交给平台。</strong> 更有 <a href="https://visioncoder.cn/challenge">VibeCoding 挑战赛</a>，每期奖励合计 <strong>2,350 元加油包</strong>，一等奖 <strong>1,000 元加油包</strong>。</td>
 </tr>
 </tbody>
 </table>
