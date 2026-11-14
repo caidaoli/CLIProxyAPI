@@ -85,6 +85,9 @@ func (s *Service) syncPluginRuntime(ctx context.Context) {
 	}
 	s.configRuntimeMu.Lock()
 	s.syncPluginModelRuntime(ctx)
+	if ctx.Err() == nil && s.hooks.OnConfigApplied != nil {
+		s.hooks.OnConfigApplied(s, s.currentConfig())
+	}
 	s.configRuntimeMu.Unlock()
 }
 

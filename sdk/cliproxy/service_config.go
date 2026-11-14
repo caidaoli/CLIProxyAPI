@@ -262,6 +262,9 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if !progressiveFullScanPending {
 		s.syncPluginModelRuntime(registrationCtx)
 	}
+	if ctx.Err() == nil && s.hooks.OnConfigApplied != nil {
+		s.hooks.OnConfigApplied(s, cfg)
+	}
 	return ctx.Err() == nil
 }
 
@@ -381,6 +384,9 @@ func (s *Service) afterProgressiveAuthLoad(ctx context.Context) error {
 	}
 	s.configRuntimeMu.Lock()
 	s.syncPluginModelRuntime(ctx)
+	if ctx.Err() == nil && s.hooks.OnConfigApplied != nil {
+		s.hooks.OnConfigApplied(s, s.currentConfig())
+	}
 	s.configRuntimeMu.Unlock()
 	s.startCoreAuthAutoRefresh(ctx)
 	return errComplete
