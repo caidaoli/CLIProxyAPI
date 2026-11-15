@@ -87,18 +87,25 @@ type NativeAuthFileResult struct {
 // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
 // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
 func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
+	auths, _, errSynthesize := SynthesizeAuthFileDetailed(ctx, fullPath, data)
+	return auths, errSynthesize
+}
+
+// SynthesizeAuthFileDetailed generates Auth entries for one auth JSON file payload
+// and reports whether a plugin auth parser claimed the file.
+func SynthesizeAuthFileDetailed(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, bool, error) {
 	auths, handled, errPlugin := SynthesizePluginAuthFile(ctx, fullPath, data)
 	if errPlugin != nil && ctx.StrictFileParsing {
-		return nil, errPlugin
+		return nil, handled, errPlugin
 	}
 	if errPlugin == nil && handled {
-		return auths, nil
+		return auths, true, nil
 	}
 	result, errNative := SynthesizeNativeAuthFile(ctx, fullPath, data)
 	if errNative != nil {
-		return nil, errNative
+		return nil, false, errNative
 	}
-	return result.Auths, nil
+	return result.Auths, false, nil
 }
 
 // resolveFileAuthKind decides the shared auth_kind for a synthesized file credential.
@@ -167,9 +174,19 @@ func SynthesizePluginAuthFile(ctx *SynthesisContext, fullPath string, data []byt
 		Path:     fullPath,
 		FileName: filepath.Base(fullPath),
 		RawJSON:  data,
-	})
+	}, ctx.AuthDir)
 	if errParse != nil || !handled {
 		return nil, handled, errParse
+	}
+	if ctx.StrictFileParsing {
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			if errWeight := coreauth.ValidateAuthWeight(auth); errWeight != nil {
+				return nil, true, fmt.Errorf("invalid plugin auth weight in %s: %w", filepath.Base(fullPath), errWeight)
+			}
+		}
 	}
 	decorated, errDecorate := decoratePluginFileAuths(ctx, fullPath, metadata, compactPluginAuths(auths))
 	if errDecorate != nil {
@@ -200,11 +217,21 @@ func decoratePluginFileAuths(ctx *SynthesisContext, fullPath string, metadata ma
 			}
 		}
 	}
+	defaultID := fileRelativeAuthID(ctx.AuthDir, fullPath)
+	defaultFileName := filepath.Base(fullPath)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
 	disabled, _ := metadata["disabled"].(bool)
 	for index, auth := range auths {
 		if auth == nil {
 			continue
+		}
+		auth.FileName = strings.TrimSpace(auth.FileName)
+		if auth.FileName == "" {
+			auth.FileName = defaultFileName
+		}
+		auth.ID = strings.TrimSpace(auth.ID)
+		if auth.ID == "" {
+			auth.ID = defaultID
 		}
 		coreauth.NormalizeCredentialMetadata(auth.Metadata)
 		if filePortalHint != "" {
@@ -283,15 +310,7 @@ func synthesizeNativeFileAuths(ctx *SynthesisContext, fullPath string, metadata 
 		label = email
 	}
 	// Use relative path under authDir as ID to stay consistent with the file-based token store.
-	id := fullPath
-	if strings.TrimSpace(ctx.AuthDir) != "" {
-		if rel, errRel := filepath.Rel(ctx.AuthDir, fullPath); errRel == nil && rel != "" {
-			id = rel
-		}
-	}
-	if runtime.GOOS == "windows" {
-		id = strings.ToLower(id)
-	}
+	id := fileRelativeAuthID(ctx.AuthDir, fullPath)
 
 	proxyURL := ""
 	if p, ok := metadata["proxy_url"].(string); ok {
@@ -404,9 +423,63 @@ func synthesizeNativeFileAuths(ctx *SynthesisContext, fullPath string, metadata 
 	return []*coreauth.Auth{a}, nil
 }
 
-func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+func fileRelativeAuthID(authDir, fullPath string) string {
+	id := fullPath
+	if trimmedDir := strings.TrimSpace(authDir); trimmedDir != "" {
+		if rel, errRel := filepath.Rel(trimmedDir, fullPath); errRel == nil && rel != "" && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			id = rel
+		} else {
+			cleanDir := filepath.Clean(trimmedDir)
+			cleanPath := filepath.Clean(fullPath)
+			if !filepath.IsAbs(cleanDir) {
+				if absDir, errAbs := filepath.Abs(cleanDir); errAbs == nil {
+					cleanDir = absDir
+				}
+			}
+			if !filepath.IsAbs(cleanPath) {
+				if absPath, errAbs := filepath.Abs(cleanPath); errAbs == nil {
+					cleanPath = absPath
+				}
+			}
+			if relAbs, errRelAbs := filepath.Rel(cleanDir, cleanPath); errRelAbs == nil && relAbs != "" && relAbs != "." && relAbs != ".." && !strings.HasPrefix(relAbs, ".."+string(filepath.Separator)) {
+				id = relAbs
+			} else if evalDir, evalPath := evalSynthesizerPathSymlinks(cleanDir), evalSynthesizerPathSymlinks(cleanPath); evalDir != "" && evalPath != "" {
+				if relEval, errRelEval := filepath.Rel(evalDir, evalPath); errRelEval == nil && relEval != "" && relEval != "." && relEval != ".." && !strings.HasPrefix(relEval, ".."+string(filepath.Separator)) {
+					id = relEval
+				}
+			}
+		}
+	}
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
+	}
+	return id
+}
+
+func evalSynthesizerPathSymlinks(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if real, errEval := filepath.EvalSymlinks(path); errEval == nil && strings.TrimSpace(real) != "" {
+		return filepath.Clean(real)
+	}
+	if parent, errParent := filepath.EvalSymlinks(filepath.Dir(path)); errParent == nil && strings.TrimSpace(parent) != "" {
+		return filepath.Clean(filepath.Join(parent, filepath.Base(path)))
+	}
+	return filepath.Clean(path)
+}
+
+type defaultAuthDirMultiParser interface {
+	ParseAuthsWithDefaultAuthDir(context.Context, pluginapi.AuthParseRequest, string) ([]*coreauth.Auth, bool, error)
+}
+
+func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest, defaultAuthDir string) ([]*coreauth.Auth, bool, error) {
 	if parser == nil {
 		return nil, false, nil
+	}
+	if dirParser, ok := parser.(defaultAuthDirMultiParser); ok {
+		return dirParser.ParseAuthsWithDefaultAuthDir(context.Background(), req, defaultAuthDir)
 	}
 	if multiParser, ok := parser.(PluginMultiAuthParser); ok {
 		return multiParser.ParseAuths(context.Background(), req)

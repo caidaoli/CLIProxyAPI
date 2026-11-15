@@ -519,56 +519,64 @@ func TestUploadAuthFile_WatcherBackedBatchDefersRuntimeLoading(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
-	authDir := t.TempDir()
-	manager := coreauth.NewManager(nil, nil, nil)
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
-	h.SetAuthLoadStatusProvider(func() watcher.AuthLoadStatus {
-		return watcher.AuthLoadStatus{State: watcher.AuthLoadStateReady}
-	})
+	for _, version := range []string{"v0", "v8"} {
+		t.Run(version, func(t *testing.T) {
+			authDir := t.TempDir()
+			manager := coreauth.NewManager(nil, nil, nil)
+			h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+			h.SetAuthLoadStatusProvider(func() watcher.AuthLoadStatus {
+				return watcher.AuthLoadStatus{State: watcher.AuthLoadStateReady}
+			})
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	for _, name := range []string{"alpha.json", "beta.json"} {
-		part, errCreate := writer.CreateFormFile("file", name)
-		if errCreate != nil {
-			t.Fatalf("create multipart file: %v", errCreate)
-		}
-		if _, errWrite := part.Write([]byte(`{"type":"codex","access_token":"token"}`)); errWrite != nil {
-			t.Fatalf("write multipart file: %v", errWrite)
-		}
-	}
-	if errClose := writer.Close(); errClose != nil {
-		t.Fatalf("close multipart writer: %v", errClose)
-	}
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			for _, name := range []string{"alpha.json", "beta.json"} {
+				part, errCreate := writer.CreateFormFile("file", name)
+				if errCreate != nil {
+					t.Fatalf("create multipart file: %v", errCreate)
+				}
+				if _, errWrite := part.Write([]byte(`{"type":"codex","access_token":"token"}`)); errWrite != nil {
+					t.Fatalf("write multipart file: %v", errWrite)
+				}
+			}
+			if errClose := writer.Close(); errClose != nil {
+				t.Fatalf("close multipart writer: %v", errClose)
+			}
 
-	rec := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	ctx.Request = req
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files", &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			ctx.Request = req
 
-	h.UploadAuthFile(ctx)
+			if version == "v8" {
+				h.UploadAuthFileV8(ctx)
+			} else {
+				h.UploadAuthFile(ctx)
+			}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("upload status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if got := len(manager.List()); got != 0 {
-		t.Fatalf("synchronously registered auth count = %d, want 0", got)
-	}
-	for _, name := range []string{"alpha.json", "beta.json"} {
-		if _, errStat := os.Stat(filepath.Join(authDir, name)); errStat != nil {
-			t.Fatalf("uploaded file %s was not persisted: %v", name, errStat)
-		}
-	}
-	var payload map[string]any
-	if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
-		t.Fatalf("decode response: %v", errDecode)
-	}
-	if got := int(payload["uploaded"].(float64)); got != 2 {
-		t.Fatalf("uploaded count = %d, want 2", got)
-	}
-	if _, returnedFiles := payload["files"]; returnedFiles {
-		t.Fatalf("response returned uploaded file details: %s", rec.Body.String())
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if got := len(manager.List()); got != 0 {
+				t.Fatalf("synchronously registered auth count = %d, want 0", got)
+			}
+			for _, name := range []string{"alpha.json", "beta.json"} {
+				if _, errStat := os.Stat(filepath.Join(authDir, name)); errStat != nil {
+					t.Fatalf("uploaded file %s was not persisted: %v", name, errStat)
+				}
+			}
+			var payload map[string]any
+			if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+				t.Fatalf("decode response: %v", errDecode)
+			}
+			if got := int(payload["uploaded"].(float64)); got != 2 {
+				t.Fatalf("uploaded count = %d, want 2", got)
+			}
+			if _, returnedFiles := payload["files"]; returnedFiles {
+				t.Fatalf("response returned uploaded file details: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -1182,38 +1190,43 @@ func TestUploadAuthFile_Sub2APIGeneratedNameDoesNotOverwriteExistingAuth(t *test
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
-	authDir := t.TempDir()
-	existingPath := filepath.Join(authDir, "codex-conflict@example.com.json")
-	existing := []byte(`{"type":"codex","email":"conflict@example.com","access_token":"old-access","refresh_token":""}`)
-	if errWrite := os.WriteFile(existingPath, existing, 0o600); errWrite != nil {
-		t.Fatalf("write existing auth file: %v", errWrite)
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
-	payload := []byte(`{"accounts":[{"name":"conflict@example.com","platform":"openai","type":"oauth","credentials":{"access_token":"new-access"}}]}`)
+	for _, endpoint := range []string{"/v0/management/auth-files", "/v8/management/credentials"} {
+		t.Run(endpoint, func(t *testing.T) {
+			authDir := t.TempDir()
+			existingPath := filepath.Join(authDir, "codex-conflict@example.com.json")
+			existing := []byte(`{"type":"codex","email":"conflict@example.com","access_token":"old-access","refresh_token":""}`)
+			if errWrite := os.WriteFile(existingPath, existing, 0o600); errWrite != nil {
+				t.Fatalf("write existing auth file: %v", errWrite)
+			}
+			manager := coreauth.NewManager(nil, nil, nil)
+			h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+			payload := []byte(`{"accounts":[{"name":"conflict@example.com","platform":"openai","type":"oauth","credentials":{"access_token":"new-access"}}]}`)
 
-	rec := uploadRawAuthPayload(t, h, "conflict-import.json", payload)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("upload status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	gotExisting, errReadExisting := os.ReadFile(existingPath)
-	if errReadExisting != nil {
-		t.Fatalf("read existing auth file: %v", errReadExisting)
-	}
-	if string(gotExisting) != string(existing) {
-		t.Fatalf("existing auth file was overwritten")
-	}
-	newPath := filepath.Join(authDir, "codex-conflict@example.com-2.json")
-	newData, errReadNew := os.ReadFile(newPath)
-	if errReadNew != nil {
-		t.Fatalf("read suffixed converted auth file: %v", errReadNew)
-	}
-	var document map[string]any
-	if errDecode := json.Unmarshal(newData, &document); errDecode != nil {
-		t.Fatalf("decode suffixed converted auth file: %v", errDecode)
-	}
-	if got, _ := document["access_token"].(string); got != "new-access" {
-		t.Fatalf("converted access_token = %q, want new-access", got)
+			rec := performUploadRequest(t, newV8AndV0AuthRouter(h), endpoint, false,
+				map[string]string{"conflict-import.json": string(payload)}, []string{"conflict-import.json"})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			gotExisting, errReadExisting := os.ReadFile(existingPath)
+			if errReadExisting != nil {
+				t.Fatalf("read existing auth file: %v", errReadExisting)
+			}
+			if string(gotExisting) != string(existing) {
+				t.Fatalf("existing auth file was overwritten")
+			}
+			newPath := filepath.Join(authDir, "codex-conflict@example.com-2.json")
+			newData, errReadNew := os.ReadFile(newPath)
+			if errReadNew != nil {
+				t.Fatalf("read suffixed converted auth file: %v", errReadNew)
+			}
+			var document map[string]any
+			if errDecode := json.Unmarshal(newData, &document); errDecode != nil {
+				t.Fatalf("decode suffixed converted auth file: %v", errDecode)
+			}
+			if got, _ := document["access_token"].(string); got != "new-access" {
+				t.Fatalf("converted access_token = %q, want new-access", got)
+			}
+		})
 	}
 }
 

@@ -1330,14 +1330,63 @@ func clearSchedulerSelectionID(meta map[string]any) {
 	delete(meta, cliproxyexecutor.SelectionIDMetadataKey)
 }
 
-func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
+func excludedCandidateIDSet(excluded []string) map[string]struct{} {
+	if len(excluded) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(excluded))
+	for _, id := range excluded {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		set[trimmed] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+func mergeTriedAuthIDs(tried map[string]struct{}, excluded map[string]struct{}) map[string]struct{} {
+	if len(excluded) == 0 {
+		return tried
+	}
+	merged := make(map[string]struct{}, len(tried)+len(excluded))
+	for id := range tried {
+		merged[id] = struct{}{}
+	}
+	for id := range excluded {
+		merged[id] = struct{}{}
+	}
+	return merged
+}
+
+func filterAuthsExcluding(auths []*Auth, excluded map[string]struct{}) []*Auth {
+	if len(auths) == 0 || len(excluded) == 0 {
+		return auths
+	}
+	filtered := make([]*Auth, 0, len(auths))
+	for _, candidate := range auths {
+		if candidate == nil {
+			continue
+		}
+		if _, skip := excluded[candidate.ID]; skip {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
+}
+
+func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, map[string]struct{}, error) {
 	if scheduler == nil || len(candidates) == 0 {
 		clearSchedulerSelectionID(opts.Metadata)
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	if state, ok := scheduler.(pluginSchedulerState); ok && !state.HasScheduler() {
 		clearSchedulerSelectionID(opts.Metadata)
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	opts.EnsureMetadata()
 	selectionID := uuid.NewString()
@@ -1363,10 +1412,11 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
-		return nil, true, errPick
+		return nil, true, nil, errPick
 	}
+	excluded := excludedCandidateIDSet(resp.ExcludeCandidates)
 	if !handled || !resp.Handled {
-		return nil, false, nil
+		return nil, false, excluded, nil
 	}
 	if resp.Reject {
 		rejectCode := strings.TrimSpace(resp.RejectCode)
@@ -1377,22 +1427,23 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		if rejectMessage == "" {
 			rejectMessage = "scheduler rejected candidate selection"
 		}
-		return nil, true, wrapSchedulerRejectError(&Error{Code: rejectCode, Message: rejectMessage})
+		return nil, true, nil, wrapSchedulerRejectError(&Error{Code: rejectCode, Message: rejectMessage})
 	}
 	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
 		keepSelectionID = true
-		return selected, true, nil
+		return selected, true, nil, nil
 	}
 
 	strategy, okStrategy := builtinSchedulerStrategy(resp.DelegateBuiltin)
 	if !okStrategy {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
-	selected, handledBuiltin, errBuiltin := m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, tried)
+	effectiveTried := mergeTriedAuthIDs(tried, excluded)
+	selected, handledBuiltin, errBuiltin := m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, effectiveTried)
 	if errBuiltin == nil && handledBuiltin && selected != nil {
 		keepSelectionID = true
 	}
-	return selected, handledBuiltin, errBuiltin
+	return selected, handledBuiltin, excluded, errBuiltin
 }
 
 func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
@@ -2386,12 +2437,45 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			schedulerCandidates = highestPriorityAuths(selectable)
 		}
 	}
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, schedulerCandidates)
+	selected, handled, excluded, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, schedulerCandidates)
+	effectiveTried := mergeTriedAuthIDs(tried, excluded)
 	if errPick != nil {
-		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
+		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errPick)
 		return nil, nil, errPick
 	}
 	if !handled {
+		if len(excluded) > 0 {
+			candidates = filterAuthsExcluding(candidates, excluded)
+			accountingCandidates = filterAuthsExcluding(accountingCandidates, excluded)
+			affinityCandidates = filterAuthsExcluding(affinityCandidates, excluded)
+			if len(candidates) == 0 {
+				return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+			}
+			now = time.Now()
+			m.mu.RLock()
+			_, available, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
+			if errAvailable != nil {
+				m.mu.RUnlock()
+				m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errAvailable)
+				return nil, nil, errAvailable
+			}
+			if trackPinnedAccounting {
+				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, provider, model, now, true, opts.Headers)
+				if errAccounting != nil {
+					m.mu.RUnlock()
+					return nil, nil, errAccounting
+				}
+				accountingAuths = fullAvailable
+			} else {
+				accountingAuths = nil
+			}
+			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
+			m.mu.RUnlock()
+			selectable = available
+			if retryAware {
+				selectable = filterUntriedAuths(available, effectiveTried)
+			}
+		}
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		if accountingAuths != nil {
@@ -2413,7 +2497,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
-			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
+			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errPick)
 			return nil, nil, errPick
 		}
 	}
@@ -2871,12 +2955,45 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			schedulerCandidates = highestPriorityAuths(selectable)
 		}
 	}
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, schedulerCandidates)
+	selected, handled, excluded, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, schedulerCandidates)
+	effectiveTried := mergeTriedAuthIDs(tried, excluded)
 	if errPick != nil {
-		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
+		m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errPick)
 		return nil, nil, "", errPick
 	}
 	if !handled {
+		if len(excluded) > 0 {
+			candidates = filterAuthsExcluding(candidates, excluded)
+			accountingCandidates = filterAuthsExcluding(accountingCandidates, excluded)
+			affinityCandidates = filterAuthsExcluding(affinityCandidates, excluded)
+			if len(candidates) == 0 {
+				return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+			}
+			now = time.Now()
+			m.mu.RLock()
+			_, available, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
+			if errAvailable != nil {
+				m.mu.RUnlock()
+				m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errAvailable)
+				return nil, nil, "", errAvailable
+			}
+			if trackPinnedAccounting {
+				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
+				if errAccounting != nil {
+					m.mu.RUnlock()
+					return nil, nil, "", errAccounting
+				}
+				accountingAuths = fullAvailable
+			} else {
+				accountingAuths = nil
+			}
+			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
+			m.mu.RUnlock()
+			selectable = available
+			if retryAware {
+				selectable = filterUntriedAuths(available, effectiveTried)
+			}
+		}
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		if accountingAuths != nil {
@@ -2916,7 +3033,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
-			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
+			m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errPick)
 			return nil, nil, "", errPick
 		}
 	}
