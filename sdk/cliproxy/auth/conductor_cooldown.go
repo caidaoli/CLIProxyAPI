@@ -2,14 +2,12 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"

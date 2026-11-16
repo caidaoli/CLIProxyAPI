@@ -127,3 +127,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/MoeForge/moego v0.1.0-alpha.3 => github.com/router-for-me/moego v0.1.3
