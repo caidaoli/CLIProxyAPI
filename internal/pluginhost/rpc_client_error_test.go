@@ -92,7 +92,8 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	if errExec == nil {
 		t.Fatal("authMgr.Execute returned nil error")
 	}
-	// The exhausted pool advertises its actual recovery after the 10s cooldown floor.
+	// MarkResult clamps the 7s Retry-After hint up to the 10s quota cooldown
+	// floor for both the model state and the terminal pool Retry-After header.
 	if got := coreauth.SafeResponseHeaders(errExec).Get("Retry-After"); got != "10" {
 		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want 10", got)
 	}
