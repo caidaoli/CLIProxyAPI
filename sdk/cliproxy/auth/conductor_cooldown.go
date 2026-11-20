@@ -3434,6 +3434,8 @@ func ResultErrorFromError(err error) *Error {
 	return resultErrorFromError(err)
 }
 
+const accessTokenRenewalErrorCode = "access_token_renewal_failed"
+
 func resultErrorFromError(err error) *Error {
 	if err == nil {
 		return nil
@@ -3460,7 +3462,11 @@ func resultErrorFromError(err error) *Error {
 			resultErr.Metadata = meta
 		}
 	}
+	var renewalErr interface{ IsAccessTokenRenewalError() bool }
 	switch {
+	case errors.As(err, &renewalErr) && renewalErr.IsAccessTokenRenewalError():
+		// A failed renewal does not reject the access token that is still valid.
+		resultErr.Code = accessTokenRenewalErrorCode
 	case isCredentialScopedError(err):
 		// A credential-scoped failure always stays on the credential quota path;
 		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
@@ -3514,10 +3520,10 @@ func resultErrorFromError(err error) *Error {
 // Connection lifecycle is intentionally separate from request_scoped so transport
 // drops do not also stop credential rotation via isRequestInvalidError.
 func shouldSkipCredentialCooldown(err *Error) bool {
-	if err != nil && err.Code == ErrorCodeForceCooldown {
+	if err == nil || err.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
+	return err.Code == accessTokenRenewalErrorCode || isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
