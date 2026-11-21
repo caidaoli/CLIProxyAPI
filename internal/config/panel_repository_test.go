@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,5 +54,30 @@ func TestPanelRepositoryConfigIsPersisted(t *testing.T) {
 	}
 	if !strings.Contains(string(persisted), "allow-remote: true") {
 		t.Fatalf("persisted config lost supported remote management settings:\n%s", persisted)
+	}
+}
+
+func TestRemoveLegacyPanelRepositoryPreservesYAMLStream(t *testing.T) {
+	const source = "remote-management:\n  panel-repo: obsolete\n  allow-remote: true\nnotes: |\n  # part of the scalar\n  keep this\n"
+	const suffix = "---\r\n# keep these exact bytes\r\nsecond: document\r\n"
+	got, errRemove := RemoveLegacyPanelRepository([]byte(source + suffix))
+	if errRemove != nil {
+		t.Fatal(errRemove)
+	}
+	if !bytes.HasSuffix(got, []byte(suffix)) {
+		t.Fatalf("trailing document changed:\n%s", got)
+	}
+	var decoded struct {
+		Management map[string]any `yaml:"remote-management"`
+		Notes      string         `yaml:"notes"`
+	}
+	if errDecode := yaml.Unmarshal(got, &decoded); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if _, present := decoded.Management["panel-repo"]; present || decoded.Management["allow-remote"] != true {
+		t.Fatalf("unexpected remote management settings: %#v", decoded.Management)
+	}
+	if decoded.Notes != "# part of the scalar\nkeep this\n" {
+		t.Fatalf("block scalar changed to %q", decoded.Notes)
 	}
 }

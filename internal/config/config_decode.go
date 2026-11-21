@@ -17,27 +17,30 @@ type configYAMLWarning struct {
 	detail string
 }
 
-// unmarshalConfigYAML keeps yaml.v3's partially decoded result for type mismatches.
-// Syntax and structural errors remain fatal because they do not produce a trustworthy document.
-func unmarshalConfigYAML(data []byte, cfg *Config) error {
-	errUnmarshal := yaml.Unmarshal(data, cfg)
-	if errUnmarshal == nil {
-		return nil
+// configTypeMismatchWarnings keeps a partially decoded config when all failures
+// are value type mismatches. Structural errors still fail the load.
+func configTypeMismatchWarnings(errDecode error) ([]configYAMLWarning, error) {
+	if errDecode == nil {
+		return nil, nil
 	}
 
 	var typeError *yaml.TypeError
-	if !errors.As(errUnmarshal, &typeError) {
-		return errUnmarshal
+	if !errors.As(errDecode, &typeError) {
+		return nil, errDecode
 	}
 
 	warnings := make([]configYAMLWarning, 0, len(typeError.Errors))
 	for _, issue := range typeError.Errors {
 		warning, okMismatch := configTypeMismatchWarning(issue)
 		if !okMismatch {
-			return errUnmarshal
+			return nil, errDecode
 		}
 		warnings = append(warnings, warning)
 	}
+	return warnings, nil
+}
+
+func logConfigYAMLWarnings(data []byte, warnings []configYAMLWarning) {
 	for _, warning := range warnings {
 		log.WithFields(log.Fields{
 			"content": redactedConfigSourceLine(data, warning.line),
@@ -45,7 +48,6 @@ func unmarshalConfigYAML(data []byte, cfg *Config) error {
 			"line":    warning.line,
 		}).Warn("ignoring invalid config value")
 	}
-	return nil
 }
 
 func configTypeMismatchWarning(issue string) (configYAMLWarning, bool) {

@@ -211,6 +211,8 @@ func TestManagerMarkResultDeletesUnauthorizedAuthWhenEnabled(t *testing.T) {
 	if _, err := manager.Register(WithSkipPersist(context.Background()), auth); err != nil {
 		t.Fatalf("register auth: %v", err)
 	}
+	changes, stopWatching := manager.WatchAuthChanges(auth.ID)
+	t.Cleanup(stopWatching)
 
 	manager.MarkResult(context.Background(), Result{
 		AuthID:  "auth-1",
@@ -225,6 +227,7 @@ func TestManagerMarkResultDeletesUnauthorizedAuthWhenEnabled(t *testing.T) {
 	if got := store.deleted(); len(got) != 1 || got[0] != "auth-1" {
 		t.Fatalf("expected auth-1 to be deleted, got %v", got)
 	}
+	requireAuthChangeNotification(t, changes)
 }
 
 func TestManagerMarkResultDeletesUsageForUnauthorizedAuth(t *testing.T) {
@@ -560,6 +563,8 @@ func TestManagerAutoRefreshDeletesUnauthorizedWhenEnabled(t *testing.T) {
 	}
 	manager.RegisterExecutor(executor)
 	registerExpiredRefreshAuth(t, manager, "xai-unauthorized-delete", "refresh-test")
+	changes, stopWatching := manager.WatchAuthChanges("xai-unauthorized-delete")
+	t.Cleanup(stopWatching)
 
 	manager.StartAutoRefresh(context.Background(), time.Millisecond)
 	t.Cleanup(manager.StopAutoRefresh)
@@ -568,6 +573,7 @@ func TestManagerAutoRefreshDeletesUnauthorizedWhenEnabled(t *testing.T) {
 	if _, ok := manager.GetByID("xai-unauthorized-delete"); ok {
 		t.Fatal("expected unauthorized auth to be removed from manager")
 	}
+	requireAuthChangeNotification(t, changes)
 }
 
 func TestManagerAutoRefreshDeletesRejectedGrantAtAccessTokenExpiry(t *testing.T) {
@@ -611,6 +617,8 @@ func TestManagerAutoRefreshDeletesRejectedGrantAtAccessTokenExpiry(t *testing.T)
 			}); errModify != nil {
 				t.Fatalf("expire access token: %v", errModify)
 			}
+			changes, stopWatching := manager.WatchAuthChanges(auth.ID)
+			t.Cleanup(stopWatching)
 			manager.StartAutoRefresh(context.Background(), time.Millisecond)
 			t.Cleanup(manager.StopAutoRefresh)
 			select {
@@ -621,10 +629,20 @@ func TestManagerAutoRefreshDeletesRejectedGrantAtAccessTokenExpiry(t *testing.T)
 			if _, ok := manager.GetByID(auth.ID); ok {
 				t.Fatal("expired credential remained registered")
 			}
+			requireAuthChangeNotification(t, changes)
 			if got := executor.calls.Load(); got != 1 {
 				t.Fatalf("Refresh calls = %d, want no repeat of rejected grant after first call", got)
 			}
 		})
+	}
+}
+
+func requireAuthChangeNotification(t *testing.T, changes <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-changes:
+	default:
+		t.Fatal("auth removal did not notify watcher")
 	}
 }
 

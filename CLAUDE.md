@@ -8,7 +8,7 @@ AI 工作指南。**必读 Fork-Specific 部分**——合并上游或重构时�
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v8`
 - Go 1.26.10
-- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.0.64
+- 上游 `router-for-me/CLIProxyAPI`（远程 `upstream`），当前基于 v8.1.0
 - Fork 增量: 冷却状态持久化 · 渐进式凭证加载 · usage 持久化 · 管理中心 · 管理面板资源管理 · uTLS protected-host 降级
 - Fork tag 命名: `fork/v*`（如 `fork/v8.20.1`），与上游 `v8.x.x` tag 共存
 
@@ -250,12 +250,12 @@ Modified:
 ### 6. Startup & Provider Policy
 
 Fork-only:
-- `cmd/server/config_bootstrap.go`（+tests）— Git-backed config 缺失时从模板初始化并持久化
 - `cmd/server/local_model.go`（+tests）— `local-model` CLI/config 优先级；启用后禁用远程模型刷新并使用内嵌 catalog，不是本地模型目录
 
 合并保护:
+- Git、PostgreSQL 和对象存储通过 `BootstrapConfig` 初始化配置。本地示例模板缺失时，`internal/store/config_mirror.go` 从 fork 获取模板，再按上游流程校验、处理管理密钥并持久化。
 - Provider 层不保留 fork 改动，合并时直接取上游：`internal/runtime/executor/`（含 Codex / Antigravity / Claude / xAI / Kimi / Devin / OpenAI-compat）、`internal/auth/`、`internal/translator/`、`internal/registry/models/`、`cmd/fetch_*_models`；`sdk/api/handlers` 不按工具类型过滤 provider。
-- 例外：`helps/utls_client.go`（第 7 节）及 `transport_decorator_test.go`；`helps/usage_helpers.go` 的 usage source 使用凭证文件名（第 1 节）；`translator/interactions/import_boundary_test.go` 的 v8 模块路径修正。
+- 例外：`helps/utls_client.go`（第 7 节）及 `transport_decorator_test.go`；Antigravity 续期失败标记保留仍有效的 access token（第 3 节）；`helps/usage_helpers.go` 的 usage source 使用凭证文件名（第 1 节）；`translator/interactions/import_boundary_test.go` 的 v8 模块路径修正。
 - 上游 `api_tools_test.go` 的 `TestAPICallUsesXAITokenStorageWithoutRefresh`、`TestAPICallPrioritizesStorageAccessTokenOverMetadataIDToken` 在 fork 中删除：fork 管理端 api-call 经 executor 注入凭证，不支持仅存于 Storage 的 xAI token。合并时不要恢复。
 
 `internal/translator/` 仍是受保护路径。合并冲突必须按协议结构解析后验证，不得用字符串拼接或脆弱源码测试掩盖行为差异。

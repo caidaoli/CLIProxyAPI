@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MoeForge/moego/json"
@@ -1376,6 +1377,10 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	selectionModel := authSelectionModelFromOptions(opts, routeModel)
+	selectionModelKey := canonicalModelKey(selectionModel)
+	routeModelKey := canonicalModelKey(routeModel)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	registryRef := registry.GetGlobalRegistry()
 	var candidates []creditsCandidateEntry
 	m.mu.RLock()
 	if affinity, ok := m.selector.(*SessionAffinitySelector); ok && affinity != nil && affinity.rebindOnNever {
@@ -1388,16 +1393,26 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 		}
 	}
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || hasUnauthorizedAuthFailure(auth) {
 			continue
 		}
 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
 			continue
 		}
+		if !eligibility.allows(auth) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 			continue
 		}
-		if !strings.Contains(strings.ToLower(strings.TrimSpace(routeModel)), "claude") {
+		if selectionModelKey != "" && !m.authSupportsRouteModel(registryRef, auth, selectionModel) {
+			continue
+		}
+		if routeModelKey != "" && !sameCanonicalModelKey(routeModelKey, selectionModelKey) && !m.authSupportsRouteModel(registryRef, auth, routeModel) {
+			continue
+		}
+		targetModel := m.selectionModelKeyForAuth(auth, routeModel)
+		if !strings.Contains(strings.ToLower(strings.TrimSpace(targetModel)), "claude") {
 			continue
 		}
 		providerKey := executorKeyFromAuth(auth)
@@ -1894,6 +1909,10 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 	if errCandidates != nil {
 		return cliproxyexecutor.Response{}, false, errCandidates
 	}
+	return m.tryAntigravityCreditsExecuteCandidates(ctx, req, opts, routeModel, candidates)
+}
+
+func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, candidates []creditsCandidateEntry) (cliproxyexecutor.Response, bool, error) {
 	maxRetryCredentials := m.MaxRetryCredentials()
 	refusedAuths := requestRefusedAuthsFromContext(ctx)
 	attempted := make(map[string]struct{})
@@ -1913,10 +1932,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		}
 		attempted[c.auth.ID] = struct{}{}
 		creditsCtx := WithAntigravityCredits(ctx)
-		if rt := m.roundTripperFor(c.auth); rt != nil {
-			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
-		}
+		creditsCtx = m.WithAuthTransport(creditsCtx, c.auth)
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		clearSchedulerSelectionID(creditsOpts.Metadata)
 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
@@ -1924,6 +1940,9 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
+			if preparedAuth != nil {
+				c.auth = preparedAuth
+			}
 			if errAbort := m.handleAntigravityCreditsPrepareError(creditsCtx, c, routeModel, creditsOpts, errPrepare); errAbort != nil {
 				return cliproxyexecutor.Response{}, false, errAbort
 			}
@@ -1938,7 +1957,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq.Model = upstreamModel
 			execOpts := creditsOpts
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(creditsCtx, c.executor, c.provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = prepareRequestAfterAuth(creditsCtx, c.executor, c.auth, c.provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
 				if isCredentialTerminatedError(errIntercept) {
 					recordRequestRefusedAuth(ctx, c.auth.ID)
@@ -1946,9 +1965,20 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				}
 				return cliproxyexecutor.Response{}, false, errIntercept
 			}
-			creditsCtx = syncMetadataSessionToContext(creditsCtx, execOpts.Metadata)
+			var activeAuth atomic.Pointer[Auth]
+			activeAuth.Store(c.auth)
+			creditsCtx = m.withExecutionAuthRefresh(syncMetadataSessionToContext(creditsCtx, execOpts.Metadata), executionAuthRefreshOptions{
+				onAuthUpdated: func(updated *Auth) {
+					if updated != nil {
+						activeAuth.Store(updated.Clone())
+					}
+				},
+			})
 			executionSeq := m.nextExecutionSeq()
 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, execOpts)
+			if currentAuth := activeAuth.Load(); currentAuth != nil && currentAuth != c.auth {
+				c.auth = currentAuth
+			}
 			errExec = markUpstreamExecutionAttemptFromContext(creditsCtx, errExec)
 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, CompletedResponse: errExec == nil && !resp.Incomplete && isCompletedExecutionPayload(resp.Payload), Options: execOpts, AccessToken: authAccessTokenForRequest(creditsCtx, c.auth, execOpts.Headers), RefreshToken: authRefreshToken(c.auth), CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
@@ -2004,6 +2034,10 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 	if errCandidates != nil {
 		return nil, false, errCandidates
 	}
+	return m.tryAntigravityCreditsExecuteStreamCandidates(ctx, req, opts, routeModel, candidates)
+}
+
+func (m *Manager) tryAntigravityCreditsExecuteStreamCandidates(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, candidates []creditsCandidateEntry) (*cliproxyexecutor.StreamResult, bool, error) {
 	maxRetryCredentials := m.MaxRetryCredentials()
 	refusedAuths := requestRefusedAuthsFromContext(ctx)
 	attempted := make(map[string]struct{})
@@ -2023,10 +2057,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		}
 		attempted[c.auth.ID] = struct{}{}
 		creditsCtx := WithAntigravityCredits(ctx)
-		if rt := m.roundTripperFor(c.auth); rt != nil {
-			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
-		}
+		creditsCtx = m.WithAuthTransport(creditsCtx, c.auth)
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		clearSchedulerSelectionID(creditsOpts.Metadata)
 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
@@ -2034,6 +2065,9 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
+			if preparedAuth != nil {
+				c.auth = preparedAuth
+			}
 			if errAbort := m.handleAntigravityCreditsPrepareError(creditsCtx, c, routeModel, creditsOpts, errPrepare); errAbort != nil {
 				return nil, false, errAbort
 			}

@@ -94,7 +94,7 @@ func TestPrepareConfigFileForUploadHashesPlaintextSecret(t *testing.T) {
 func TestPrepareConfigFileForUploadToleratesUnrelatedLegacyTypeErrors(t *testing.T) {
 	for _, withSecret := range []bool{false, true} {
 		t.Run(fmt.Sprintf("secret=%t", withSecret), func(t *testing.T) {
-			content := "port: 9001\nauth-load-workers: invalid-worker-count\ndebug: true\n"
+			content := "server:\n  server-id: aaaaaaaa-1111-4444-8888-bbbbbbbbbbbb\nport: 9001\nauth-load-workers: invalid-worker-count\ndebug: true\n"
 			if withSecret {
 				content += "remote-management:\n  secret-key: " + uploadTestPlaintextSecret + "\n"
 			}
@@ -129,6 +129,17 @@ func TestPrepareConfigFileForUploadRefusesInvalidManagementSecretTypes(t *testin
 		if saved := readUploadTestConfig(t, path); saved != original {
 			t.Fatalf("config rewritten to %q, want it untouched", saved)
 		}
+	}
+}
+
+func TestPrepareConfigFileForUploadRefusesMalformedLegacyManagement(t *testing.T) {
+	path := writeUploadTestConfig(t, "port: 8317\nremote-management: ["+uploadTestPlaintextSecret+"]\n")
+	original := readUploadTestConfig(t, path)
+	if errPrepare := PrepareConfigFileForUpload(path); errPrepare == nil {
+		t.Fatal("PrepareConfigFileForUpload() accepted a non-mapping remote-management section")
+	}
+	if saved := readUploadTestConfig(t, path); saved != original {
+		t.Fatalf("config rewritten to %q, want it untouched", saved)
 	}
 }
 
@@ -232,18 +243,21 @@ func TestPrepareConfigFileForUploadLeavesSettledConfigUntouched(t *testing.T) {
 		"no secret":            "# operator note\nport: 8317\n",
 		"null v8 secret":       "# operator note\nmanagement:\n  secret-key: null\n",
 		"tilde legacy secret":  "# operator note\nremote-management:\n  secret-key: ~\n",
-		"empty file":           "",
 		"shipped template":     string(shippedTemplate),
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := writeUploadTestConfig(t, content)
-
-			if errPrepare := PrepareConfigFileForUpload(path); errPrepare != nil {
-				t.Fatalf("PrepareConfigFileForUpload() error = %v", errPrepare)
+			settled, _, errEnsure := EnsureServerIDInConfigBytes([]byte(content))
+			if errEnsure != nil {
+				t.Fatal(errEnsure)
 			}
+			path := writeUploadTestConfig(t, string(settled))
 
-			if saved := readUploadTestConfig(t, path); saved != content {
-				t.Fatalf("config rewritten to %q, want it untouched", saved)
+			snapshot, errPrepare := PrepareConfigFileForUploadWithOptional(path, false)
+			if errPrepare != nil {
+				t.Fatalf("prepare config: %v", errPrepare)
+			}
+			if string(snapshot) != string(settled) || readUploadTestConfig(t, path) != string(settled) {
+				t.Fatal("preparing an already settled config changed its bytes")
 			}
 		})
 	}
