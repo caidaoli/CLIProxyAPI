@@ -590,6 +590,7 @@ func TestRuntimeAuthSyncHook_DoesNotBlockOnUnrelatedAntigravityProbes(t *testing
 		coreManager: manager,
 		pluginHost:  pluginhost.New(),
 	}
+	t.Cleanup(service.pluginRuntimeSyncWg.Wait)
 	service.antigravityProbeWg.Add(1)
 	done := make(chan error, 1)
 	finished := make(chan struct{})
@@ -703,6 +704,7 @@ func TestHandleAuthUpdates_PluginVirtualModifyDoesNotBlockOnUnrelatedAntigravity
 		coreManager: manager,
 		pluginHost:  pluginhost.New(),
 	}
+	t.Cleanup(service.pluginRuntimeSyncWg.Wait)
 
 	runAuthUpdateWithoutProbeWait(t, service, func() {
 		service.handleAuthUpdate(context.Background(), watcher.AuthUpdate{

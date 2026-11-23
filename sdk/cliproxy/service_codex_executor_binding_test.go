@@ -108,6 +108,7 @@ func TestSyncPluginModelRuntime_UnrelatedAuthDoesNotReplaceWebsocketExecutor(t *
 				Status:   coreauth.StatusActive,
 			}
 			t.Cleanup(func() {
+				service.pluginRuntimeSyncWg.Wait()
 				GlobalModelRegistry().UnregisterClient(providerAuth.ID)
 				GlobalModelRegistry().UnregisterClient(unrelatedAuth.ID)
 				sdkAuth.RegisterPluginAuthParser(nil)
