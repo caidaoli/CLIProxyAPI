@@ -519,6 +519,13 @@ func TestHandleAuthUpdates_FileDeleteScope(t *testing.T) {
 
 type syncTestExecutor struct{}
 
+func wrapSyncTestCodexExecutor(provider string, _ coreauth.ProviderExecutor) coreauth.ProviderExecutor {
+	if provider == "codex" {
+		return &syncTestExecutor{}
+	}
+	return nil
+}
+
 func (e *syncTestExecutor) Identifier() string { return "codex" }
 
 func (e *syncTestExecutor) Execute(ctx context.Context, a *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -1032,11 +1039,15 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(&syncTestExecutor{})
+	// Register the config API key in the first phase, before the file auth.
 	authA := &coreauth.Auth{
-		ID:         authAID,
-		Provider:   "codex",
-		Status:     coreauth.StatusActive,
-		Attributes: map[string]string{"plan_type": "pro", "path": "/path/to/codex-batch-wait-a.json"},
+		ID:       authAID,
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			coreauth.AttributeAPIKey: "test-key",
+			coreauth.AttributeSource: coreauth.AuthSourceConfig,
+		},
 	}
 	authB := &coreauth.Auth{
 		ID:         authBID,
@@ -1061,15 +1072,6 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 			<-bBlock
 		}
 	}
-	t.Cleanup(func() {
-		modelRegistrationTaskHook = nil
-		select {
-		case <-bBlock:
-		default:
-			close(bBlock)
-		}
-	})
-
 	updateA := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authAID, Auth: authA}
 	updateA.SetRevision(1)
 	updateB := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authBID, Auth: authB}
@@ -1080,6 +1082,16 @@ func TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch(t *tes
 		defer close(finishedBatch)
 		service.handleAuthUpdates(context.Background(), []watcher.AuthUpdate{updateA, updateB})
 	}()
+	t.Cleanup(func() {
+		select {
+		case <-bBlock:
+		default:
+			close(bBlock)
+		}
+		<-finishedBatch
+		service.pluginRuntimeSyncWg.Wait()
+		modelRegistrationTaskHook = nil
+	})
 
 	select {
 	case <-bStarted:
@@ -1142,6 +1154,7 @@ func TestEndToEndStatusPatch_RestoresModelsThroughServerPipeline(t *testing.T) {
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
+	t.Cleanup(service.pluginRuntimeSyncWg.Wait)
 
 	server := api.NewServer(service.cfg, service.coreManager, service.accessManager, service.configPath, service.serverOptions...)
 	if server == nil {
@@ -1638,17 +1651,18 @@ func TestEndToEndAuthFileReplacement_RestoresModelsInV1ModelsWithoutRestart(t *t
 	service, errBuild := NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(filepath.Join(authDir, "config.yaml")).
+		WithExecutorWrapper(wrapSyncTestCodexExecutor).
 		Build()
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
+	t.Cleanup(service.pluginRuntimeSyncWg.Wait)
 
 	server := api.NewServer(service.cfg, service.coreManager, service.accessManager, service.configPath, service.serverOptions...)
 	if server == nil {
 		t.Fatal("NewServer() returned nil")
 	}
 	handler := server.Handler()
-	service.coreManager.RegisterExecutor(&syncTestExecutor{})
 
 	auth := &coreauth.Auth{
 		ID:       authID,
@@ -1780,7 +1794,6 @@ func TestEndToEndAuthFileReplacement_RestoresModelsInV1ModelsWithoutRestart(t *t
 	}
 
 	// 5. Verify direct inference request succeeds using the replacement credential token
-	service.coreManager.RegisterExecutor(&syncTestExecutor{})
 	resp, errExec := service.coreManager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: teamModels[0]}, cliproxyexecutor.Options{})
 	if errExec != nil || string(resp.Payload) != "token-new" {
 		t.Fatalf("expected inference execution to use replacement token, got resp=%q err=%v", string(resp.Payload), errExec)
@@ -1824,17 +1837,18 @@ func TestEndToEndAuthFilePatch_RestoresModelsInV1ModelsWithoutRestart(t *testing
 	service, errBuild := NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(filepath.Join(authDir, "config.yaml")).
+		WithExecutorWrapper(wrapSyncTestCodexExecutor).
 		Build()
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
+	t.Cleanup(service.pluginRuntimeSyncWg.Wait)
 
 	server := api.NewServer(service.cfg, service.coreManager, service.accessManager, service.configPath, service.serverOptions...)
 	if server == nil {
 		t.Fatal("NewServer() returned nil")
 	}
 	handler := server.Handler()
-	service.coreManager.RegisterExecutor(&syncTestExecutor{})
 
 	auth := &coreauth.Auth{
 		ID:       authID,
@@ -1935,7 +1949,6 @@ func TestEndToEndAuthFilePatch_RestoresModelsInV1ModelsWithoutRestart(t *testing
 	}
 
 	// 4. Verify direct inference request succeeds using fresh token after PATCH
-	service.coreManager.RegisterExecutor(&syncTestExecutor{})
 	resp, errExec := service.coreManager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: teamModels[0]}, cliproxyexecutor.Options{})
 	if errExec != nil || string(resp.Payload) != "token-fresh" {
 		t.Fatalf("expected inference execution to use fresh token after PATCH, got resp=%q err=%v", string(resp.Payload), errExec)

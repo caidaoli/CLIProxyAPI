@@ -782,18 +782,18 @@ func TestConvertOpenAIResponsesRequestToAntigravity_InterruptedMessageBeforeReal
 		t.Fatalf("ValidateGeminiFunctionCallPairing failed on Antigravity interrupted message before real output request: %v; output=%s", errPair, out)
 	}
 
-	// The user message precedes the completed tool response turn
-	stopText := ojson.GetBytesNoCopy(out, "request.contents.2.parts.0.text").String()
-	if stopText != "Stop, do something else instead." {
-		t.Fatalf("unexpected text in request.contents[2]: %q", stopText)
-	}
-	c1Resp := ojson.GetBytesNoCopy(out, "request.contents.3.parts.0.functionResponse")
+	// Antigravity keeps the grouped tool responses immediately after their calls.
+	c1Resp := ojson.GetBytesNoCopy(out, "request.contents.2.parts.0.functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected synthesized response for c1: %s", c1Resp.Raw)
 	}
-	c2Resp := ojson.GetBytesNoCopy(out, "request.contents.3.parts.1.functionResponse")
+	c2Resp := ojson.GetBytesNoCopy(out, "request.contents.2.parts.1.functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected real response for c2: %s", c2Resp.Raw)
+	}
+	userTurn := ojson.GetBytesNoCopy(out, "request.contents.3")
+	if userTurn.Get("role").String() != "user" || userTurn.Get("parts.0.text").String() != "Stop, do something else instead." {
+		t.Fatalf("unexpected user turn after grouped responses: %s", userTurn.Raw)
 	}
 }
 

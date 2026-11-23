@@ -210,6 +210,16 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.UpdatedAt = now
 	}
 	m.mu.Lock()
+	if m.authEpochs[auth.ID] != 0 && strings.EqualFold(auth.Provider, "antigravity") {
+		// Invalidate the old snapshot before consuming a pending cooldown restore.
+		// The auth mutation gate excludes publication from the old registration.
+		m.mu.Unlock()
+		if errInvalidate := invalidateLocalAntigravityModelEnums(ctx, auth); errInvalidate != nil {
+			return nil, fmt.Errorf("register auth %s: invalidate model enums: %w", auth.ID, errInvalidate)
+		}
+		auth.antigravityEnumRegistration = newAntigravityEnumRegistration()
+		m.mu.Lock()
+	}
 	_, deferCooldownCleanup := m.cooldownRestoreIDs[auth.ID]
 	m.applyPendingCooldownRestoreLocked(auth, now)
 	cooldownStateChanged := normalizeModelStates(auth)
@@ -534,6 +544,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
+	auth.antigravityEnumRegistration = existing.antigravityEnumRegistration
 	if existing.CopilotCatalog != nil || auth.CopilotCatalog != nil {
 		// An unversioned file reload or stale clone cannot replace newer discovery.
 		// A different account or upstream must discover its own permissions.
@@ -1081,6 +1092,19 @@ func (m *Manager) Load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A reload can also reintroduce an ID previously removed from this
+	// manager. Invalidate those registrations, not an ordinary warm startup.
+	var reintroduced []*Auth
+	m.mu.RLock()
+	for _, auth := range items {
+		if auth != nil && m.authEpochs[auth.ID] != 0 && m.auths[auth.ID] == nil && strings.EqualFold(auth.Provider, "antigravity") {
+			reintroduced = append(reintroduced, auth)
+		}
+	}
+	m.mu.RUnlock()
+	if errInvalidate := invalidateLocalAntigravityModelEnums(lockCtx, reintroduced...); errInvalidate != nil {
+		return fmt.Errorf("load auths: invalidate model enums: %w", errInvalidate)
+	}
 	m.mu.Lock()
 	now := time.Now()
 	previousAuths := m.auths
@@ -1103,14 +1127,18 @@ func (m *Manager) Load(ctx context.Context) error {
 			updateAggregatedAvailability(auth, now)
 		}
 		auth.CopilotCatalog = nil
+		knownRegistration := m.authEpochs[auth.ID] != 0
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
 		if prev, exists := previousAuths[auth.ID]; exists && prev != nil {
+			auth.antigravityEnumRegistration = prev.antigravityEnumRegistration
 			auth.CredentialVersion = max(auth.CredentialVersion, prev.CredentialVersion)
 			if CredentialsChanged(prev, auth) {
 				auth.CredentialVersion++
 			}
+		} else if knownRegistration && strings.EqualFold(auth.Provider, "antigravity") {
+			auth.antigravityEnumRegistration = newAntigravityEnumRegistration()
 		}
 		if auth.CredentialVersion == 0 {
 			auth.CredentialVersion = 1

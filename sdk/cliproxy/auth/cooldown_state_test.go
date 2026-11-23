@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -920,6 +922,66 @@ func TestManager_PreparedCooldownAppliedDuringRegister(t *testing.T) {
 	}
 	if got := store.applyCount.Load(); got != 1 {
 		t.Fatalf("Apply count after completion = %d, want 1", got)
+	}
+}
+
+func TestManager_ReregisterPreservesPendingCooldownAfterModelEnumInvalidationFailure(t *testing.T) {
+	const authID, model = "ag-pending-cooldown", "claude-sonnet-4-6"
+	ctx := t.Context()
+	nextRetry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	store := NewFileCooldownStateStore(t.TempDir())
+	record := CooldownStateRecord{
+		AuthID: authID, Provider: "antigravity", Model: model, Status: "cooling", NextRetryAfter: nextRetry,
+	}
+	if errApply := store.Apply(ctx, []CooldownStateSnapshot{{AuthID: authID, Records: []CooldownStateRecord{record}}}); errApply != nil {
+		t.Fatal(errApply)
+	}
+	manager := NewManager(nil, nil, nil)
+	credential := func() *Auth { return &Auth{ID: authID, Provider: "antigravity"} }
+	if _, errRegister := manager.Register(ctx, credential()); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	manager.Remove(ctx, authID)
+	manager.SetCooldownStateStore(store)
+	if errPrepare := manager.PrepareCooldownRestore(ctx); errPrepare != nil {
+		t.Fatal(errPrepare)
+	}
+
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		if errShutdown := kvstore.ShutdownLocal(); errShutdown != nil {
+			t.Error(errShutdown)
+		}
+	})
+	// Enabling KV on an existing directory leaves KV unavailable until reconfigured.
+	errConfigure := kvstore.ConfigureLocal(true, dir)
+	if errConfigure == nil {
+		t.Fatal("ConfigureLocal() succeeded on a directory")
+	}
+	if _, errRegister := manager.Register(ctx, credential()); !errors.Is(errRegister, errConfigure) {
+		t.Fatalf("Register() error = %v, want KV open error %v", errRegister, errConfigure)
+	}
+	if errConfigure := kvstore.ConfigureLocal(true, filepath.Join(dir, "kv.db")); errConfigure != nil {
+		t.Fatal(errConfigure)
+	}
+	auth, errRegister := manager.Register(ctx, credential())
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	if state := auth.ModelStates[model]; state == nil || !state.Unavailable || !state.NextRetryAfter.Equal(nextRetry) {
+		t.Fatalf("registered model state = %+v, want cooldown until %v", state, nextRetry)
+	}
+	if errComplete := manager.CompleteCooldownRestore(ctx); errComplete != nil {
+		t.Fatal(errComplete)
+	}
+	snapshots, errLoad := store.Load(ctx)
+	if errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	if len(snapshots) != 1 || snapshots[0].AuthID != authID || !slices.ContainsFunc(snapshots[0].Records, func(record CooldownStateRecord) bool {
+		return record.Model == model && record.NextRetryAfter.Equal(nextRetry)
+	}) {
+		t.Fatalf("persisted cooldown = %+v, want %s/%s cooling until %v", snapshots, authID, model, nextRetry)
 	}
 }
 
