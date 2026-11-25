@@ -71,12 +71,7 @@ func TestIssue7000AntigravityAliasesPreserveOtherFieldsAndToolChoice(t *testing.
 						t.Fatal(errMarshal)
 					}
 					request := ojson.GetBytes(encoded, "request")
-					instruction := request.Get(systemKey)
-					assertIssue7000PromptSchema(t, instruction, issue7000LiteralSchema)
-					originalText, _, _ := strings.Cut(instruction.Get("parts.0.text").String(), "\n\n")
-					if originalText != "keep system" {
-						t.Errorf("original system instruction = %q, want %q", originalText, "keep system")
-					}
+					assertIssue7000PromptSchema(t, request.Get(systemKey), issue7000LiteralSchema)
 					for path, want := range map[string]string{
 						"generationConfig.temperature": "0.25", "generation_config.stopSequences.0": "STOP",
 						"contents.0.parts.0.text":             "keep history",
@@ -85,6 +80,19 @@ func TestIssue7000AntigravityAliasesPreserveOtherFieldsAndToolChoice(t *testing.
 						if got := request.Get(path).String(); got != want {
 							t.Errorf("%s = %q, want %q", path, got, want)
 						}
+					}
+					if systemKey == "systemInstruction" {
+						if got := request.Get("systemInstruction.role").String(); got != "user" {
+							t.Errorf("systemInstruction.role = %q, want user", got)
+						}
+						if got := request.Get("systemInstruction.parts.#").Int(); got != 1 {
+							t.Errorf("systemInstruction.parts.# = %d, want 1", got)
+						}
+						if got := request.Get("systemInstruction.parts.0.text").String(); !strings.HasPrefix(got, "keep system\n\n") {
+							t.Errorf("systemInstruction.parts.0.text = %q, want prefix %q", got, "keep system\n\n")
+						}
+					} else if got := request.Get(systemKey + ".parts.0.text").String(); got != "keep system" {
+						t.Errorf("%s.parts.0.text = %q, want %q", systemKey, got, "keep system")
 					}
 					for _, configKey := range []string{"generationConfig", "generation_config"} {
 						for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema", "responseMimeType", "response_mime_type"} {
