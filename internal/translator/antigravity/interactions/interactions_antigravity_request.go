@@ -36,6 +36,7 @@ func convertInteractionsRequestToAntigravity(modelName string, inputRawJSON []by
 		_ = outDoc.Delete("request.tools")
 	}
 	attachDefaultAntigravitySafetySettingsDoc(outDoc)
+	translatorcommon.NormalizeAntigravityRequestDoc(outDoc)
 	out := rewriteInteractionsFunctionNames(outDoc.Bytes(), functionNameMap)
 	return out, errInput
 }

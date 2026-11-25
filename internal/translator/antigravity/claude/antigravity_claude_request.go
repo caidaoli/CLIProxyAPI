@@ -1010,8 +1010,15 @@ func convertClaudeRequestToAntigravityWithWebSearchContext(ctx context.Context, 
 	if v := ojson.GetBytesNoCopy(rawJSON, "top_k"); v.Exists() && v.Type == ojson.Number {
 		_ = outDoc.Set("request.generationConfig.topK", v.Num)
 	}
-	if v := ojson.GetBytesNoCopy(rawJSON, "max_tokens"); v.Exists() && v.Type == ojson.Number {
-		_ = outDoc.Set("request.generationConfig.maxOutputTokens", v.Num)
+	if rawMaxTokens, ok := translatorcommon.ClaudeMaxTokensRaw(ojson.GetBytesNoCopy(rawJSON, "max_tokens")); ok {
+		_ = outDoc.SetRaw("request.generationConfig.maxOutputTokens", rawMaxTokens)
+	}
+	if sequences := translatorcommon.ClaudeStopSequences(ojson.GetBytesNoCopy(rawJSON, "stop_sequences")); len(sequences) > 0 {
+		_ = outDoc.Set("request.generationConfig.stopSequences", sequences)
+	}
+	if schema, ok := translatorcommon.ClaudeOutputJSONSchema(ojson.GetBytesNoCopy(rawJSON, "output_config.format")); ok {
+		_ = outDoc.Set("request.generationConfig.responseMimeType", "application/json")
+		_ = outDoc.SetRaw("request.generationConfig.responseSchema", schema.Raw)
 	}
 
 	common.AttachDefaultSafetySettingsDoc(outDoc, "request.safetySettings")
@@ -1021,8 +1028,9 @@ func convertClaudeRequestToAntigravityWithWebSearchContext(ctx context.Context, 
 	} else {
 		out = sigcompat.SanitizeGeminiSystemInstruction(out, "request.contents")
 	}
-
-	return out, drops.Err()
+	finalDoc := ojson.NewDoc(out)
+	translatorcommon.NormalizeAntigravityRequestDoc(finalDoc)
+	return finalDoc.Bytes(), drops.Err()
 }
 
 // claudeBase64InlineData converts a Claude base64 source into an Antigravity

@@ -61,6 +61,7 @@ func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, str
 	_ = outDoc.Set("requestType", "web_search")
 	ensureAntigravityResponsesWebSearchToolDoc(outDoc, out, includedDomains)
 	ensureAntigravityResponsesWebSearchSystemInstructionDoc(outDoc, out)
+	translatorcommon.NormalizeAntigravityRequestDoc(outDoc)
 	return enableAntigravityResponsesThinkingSummary(payload, outDoc.Bytes()), errConvert
 }
 

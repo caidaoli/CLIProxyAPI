@@ -198,6 +198,20 @@ func TestApplyPatchActualProviderErrorAndEOF(t *testing.T) {
 					if errExecuteStream != nil {
 						t.Fatal(errExecuteStream)
 					}
+					if provider == "antigravity" && mode == "empty" {
+						var errorCount int
+						for chunk := range stream.Chunks {
+							status, ok := chunk.Err.(interface{ StatusCode() int })
+							if len(chunk.Payload) != 0 || !ok || status.StatusCode() != http.StatusBadGateway || chunk.Err.Error() != "upstream stream closed with zero output" {
+								t.Fatalf("expected zero-output 502 without payload, got %+v", chunk)
+							}
+							errorCount++
+						}
+						if errorCount != 1 {
+							t.Fatalf("stream emitted %d errors, want 1", errorCount)
+						}
+						return
+					}
 					assertTask6FailedStream(t, stream.Chunks)
 				}
 			})
