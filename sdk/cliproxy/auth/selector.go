@@ -1599,7 +1599,7 @@ func isStateBlockedByQuotaOrAuth(unavailable bool, quota QuotaState, nextRetryAf
 	return nextRetryAfter.IsZero() && quota.NextRecoverAt.IsZero()
 }
 
-func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx context.Context, candidates []*Auth, model, authID string, now time.Time) bool {
+func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx context.Context, candidates []*Auth, model string, opts cliproxyexecutor.Options, authID string, now time.Time) bool {
 	if s == nil || (!s.rebindOnQuotaOnly && !s.rebindOnNever) || authID == "" {
 		return false
 	}
@@ -1612,14 +1612,14 @@ func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx conte
 	}
 	for _, candidate := range candidates {
 		if candidate != nil && candidate.ID == authID {
-			return !isAuthBlockedByQuotaOrAuthForModelForRequest(ctx, candidate, model, now)
+			return !isAuthBlockedByQuotaOrAuthForAntigravityRequest(ctx, candidate, model, model, opts, nil, now, opts.Headers)
 		}
 	}
 	return false
 }
 
-func (s *SessionAffinitySelector) unavailableBoundAuthError(ctx context.Context, candidates []*Auth, model, authID string, now time.Time) *Error {
-	if s.shouldPreserveBindingWhenUnavailable(ctx, candidates, model, authID, now) {
+func (s *SessionAffinitySelector) unavailableBoundAuthError(ctx context.Context, candidates []*Auth, model string, opts cliproxyexecutor.Options, authID string, now time.Time) *Error {
+	if s.shouldPreserveBindingWhenUnavailable(ctx, candidates, model, opts, authID, now) {
 		return &Error{
 			Code:       "session_auth_retry",
 			Message:    "bound session credential is transiently unavailable",
@@ -1839,7 +1839,13 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		if auth := authWithID(available, cachedAuthID); auth != nil {
-			if authWithID(eligible, cachedAuthID) == nil {
+			if authWithID(eligible, cachedAuthID) != nil {
+				bind(auth.ID, true)
+				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				return s.pickWithAffinityReservation(ctx, provider, model, opts, available, auth, reservation)
+			}
+			// The route can still be ready after the executor's late Antigravity variant hits quota.
+			if (!s.rebindOnQuotaOnly && !s.rebindOnNever) || s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, opts, cachedAuthID, now) {
 				if s.rebindOnNever {
 					return nil, &Error{Code: "session_auth_retry", Message: "bound session credential was already tried", Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
 				}
@@ -1853,13 +1859,10 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 				entry.Infof("session-affinity: cache hit but auth already tried, temporary failover | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), temporary.ID, provider, model)
 				return temporary, nil
 			}
-			bind(auth.ID, true)
-			entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
-			return s.pickWithAffinityReservation(ctx, provider, model, opts, available, auth, reservation)
 		}
 		if s.rebindOnNever {
 			bind(cachedAuthID, false)
-			errBound := s.unavailableBoundAuthError(ctx, bindingCandidates, model, cachedAuthID, now)
+			errBound := s.unavailableBoundAuthError(ctx, bindingCandidates, model, opts, cachedAuthID, now)
 			entry.Infof("session-affinity: cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, errBound.Code, provider, model)
 			return nil, errBound
 		}
@@ -1874,7 +1877,7 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 		if auth == nil {
 			return nil, nil
 		}
-		if s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, cachedAuthID, now) {
+		if s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, opts, cachedAuthID, now) {
 			bind(cachedAuthID, false)
 			entry.Infof("session-affinity: cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, auth.ID, provider, model)
 			return auth, nil
@@ -1920,11 +1923,11 @@ func (s *SessionAffinitySelector) pickSessionWithRetry(ctx context.Context, prov
 			}
 			if !isSubagent && !isFork && s.rebindOnNever {
 				bind(cachedAuthID, false)
-				errBound := s.unavailableBoundAuthError(ctx, bindingCandidates, model, cachedAuthID, now)
+				errBound := s.unavailableBoundAuthError(ctx, bindingCandidates, model, opts, cachedAuthID, now)
 				entry.Infof("session-affinity: fallback cache hit but bound auth unavailable, refusing failover | session=%s fallback=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, errBound.Code, provider, model)
 				return nil, errBound
 			}
-			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, cachedAuthID, now) {
+			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, bindingCandidates, model, opts, cachedAuthID, now) {
 				auth, errPick := s.pickWithAffinityReservation(ctx, provider, model, opts, highestPriorityAuths(eligible), nil, reservation)
 				if errPick != nil {
 					return nil, errPick
@@ -2058,11 +2061,11 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 					delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
 				}
 			}
-			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, match.AuthID, now)
+			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, opts, match.AuthID, now)
 			entry.Infof("session-affinity: LCP cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(match.SessionID), match.AuthID, errBound.Code, provider, model)
 			return nil, true, errBound
 		}
-		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, match.AuthID, now) {
+		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, opts, match.AuthID, now) {
 			preservedAuthID = match.AuthID
 		}
 	}

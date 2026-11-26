@@ -10,7 +10,6 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/antigravity/gemini"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -602,13 +601,12 @@ func convertOpenAIRequestToAntigravityChat(modelName string, inputRawJSON []byte
 	applyOpenAIToolChoiceToAntigravityDoc(outDoc, rawJSON, functionNameMap, allowed, declaredAllowedNames, hasAllowedNativeTools)
 	common.AttachDefaultSafetySettingsDoc(outDoc, "request.safetySettings")
 	summaryCfg := thinking.ExtractSummaryConfig(rawJSON, "openai")
-	out := thinking.ApplySummaryConfig(outDoc.Bytes(), "antigravity", summaryCfg)
+	thinking.ApplySummaryConfigForModelDoc(outDoc, "antigravity", "", summaryCfg)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
-		out = gemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
+		translatorcommon.SanitizeAntigravityClaudeGeminiRequestSignaturesDoc(modelName, outDoc)
 	}
-	finalDoc := ojson.NewDoc(out)
-	translatorcommon.NormalizeAntigravityRequestDoc(finalDoc)
-	return finalDoc.Bytes(), drops.Err()
+	translatorcommon.NormalizeAntigravityRequestDoc(outDoc)
+	return outDoc.Bytes(), drops.Err()
 }
 
 func antigravityOpenAITextPart(text string) []byte {
